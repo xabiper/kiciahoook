@@ -25,7 +25,7 @@ Players.LocalPlayer.Chatted:Connect(function(msg)
         if gui then gui:Destroy() end
         local lb = Lighting:FindFirstChild("NimbusGlassBlur")
         if lb then lb:Destroy() end
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/xabiper/kiciahoook/refs/heads/main/nimbus-glass-ui%20(1).luau"))()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/xabiper/kiciahoook/refs/heads/main/nimbus-glass-ui-mobile.luau"))()
     end
 end)
 
