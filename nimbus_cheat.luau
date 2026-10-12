@@ -1122,7 +1122,7 @@ local reopenBtn = create("TextButton", {
     Parent = reopenGroup, Size = UDim2.fromScale(1, 1),
     BackgroundTransparency = 1, BorderSizePixel = 0,
     AutoButtonColor = false, Font = Enum.Font.GothamMedium,
-    Text = "Reopen · Insert",
+    Text = "Reopen · Right Shift",
     TextColor3 = COLORS.Ink, TextSize = 10,
 })
 
@@ -1249,7 +1249,7 @@ end)
 
 -- KEYBIND: Insert to toggle
 UserInputService.InputBegan:Connect(function(inp)
-    if inp.KeyCode == Enum.KeyCode.Insert and UserInputService:GetFocusedTextBox() == nil then
+    if inp.KeyCode == Enum.KeyCode.RightShift and UserInputService:GetFocusedTextBox() == nil then
         if closed then openPanel() else closePanel() end
     end
 end)
