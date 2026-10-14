@@ -1,0 +1,2793 @@
+--[[
+	Neko UI - Luau port of index.html (executor script)
+	Paste into your executor and run. Re-running replaces the old menu.
+
+	Mirrors the web build: dark window, sidebar + tabs, search, collapsible groups,
+	toggles / dropdowns / keybinds / sliders / swatches / buttons, spring motion,
+	draggable + squishy window, minimize / close / maximize / dock, watermark,
+	blur, accent recolor, RightShift menu key, panic key.
+
+	Paste decal IDs into ASSETS. Empty slots are drawn natively.
+	Cosmetic only: nothing here touches gameplay.
+]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local GuiService = game:GetService("GuiService")
+local CAS = game:GetService("ContextActionService")
+local SINK_NAME = "NekoSink"
+-- mouse position in the same space as AbsolutePosition (the screen ignores the top bar inset)
+local function guiMouse()
+	local m = UIS:GetMouseLocation()
+	local inset = GuiService:GetGuiInset()
+	return Vector2.new(m.X, m.Y - inset.Y)
+end
+local TweenService = game:GetService("TweenService")
+local TextService = game:GetService("TextService")
+local Lighting = game:GetService("Lighting")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- executor: re-running replaces the previous instance instead of stacking
+if _G.NEKO_STOP then
+	pcall(_G.NEKO_STOP)
+end
+local ALIVE = true
+local renderConn
+
+local function guiParent()
+	local ok, hui = pcall(function()
+		return gethui and gethui()
+	end)
+	if ok and hui then
+		return hui
+	end
+	local ok2, core = pcall(function()
+		return game:GetService("CoreGui")
+	end)
+	if ok2 and core then
+		return core
+	end
+	return playerGui
+end
+
+-- =====================================================================
+-- ASSETS: decal ids from the uploaded PNGs (rbxassetid://...). "" = native.
+-- Letter PNGs are 4x of the CSS size; their Roblox size is the css values below.
+-- =====================================================================
+local ASSETS = {
+	logoMark = "rbxassetid://140218288383071", -- full logo (logo_full_reference), drawn as one piece
+	flower = "rbxassetid://77960160652015", -- titlebar icon
+	logoFlower = "",
+	cloud = "",
+	letters = {
+		n = "rbxassetid://78232011657014",
+		e = "rbxassetid://88142898492874",
+		k = "rbxassetid://130069770695684",
+		o = "rbxassetid://76333346072279",
+		period = "rbxassetid://134510123520542",
+	},
+	icons = {
+		aim = "rbxassetid://106942535352683",
+		vis = "rbxassetid://101223226771485",
+		misc = "rbxassetid://110546119334659",
+		cloud = "rbxassetid://122680938030030",
+		games = "rbxassetid://70919225745002",
+	},
+	chrome = {
+		min = "rbxassetid://126378524217306",
+		max = "rbxassetid://134100414506571",
+		close = "rbxassetid://115591883115435",
+		chevDown = "rbxassetid://74130781329386",
+		chevUp = "rbxassetid://122741386856103",
+		tick = "rbxassetid://103606461017285",
+		search = "rbxassetid://109934953459323",
+		star = "rbxassetid://82366032622722", -- upload assets/icons/star.png in the Creator Dashboard and paste the Image ID here
+	},
+}
+
+-- =====================================================================
+-- =====================================================================
+-- Title font: built-in (no custom font file is loaded)
+local TITLE_FONT = Enum.Font.FredokaOne
+
+-- =====================================================================
+-- logo text shadow (index.html: text-shadow 0 2px 0 rgba(190,24,93,.28))
+-- Tweak these: color is the shadow color, opacity is 0..1, offset is in pixels down.
+local LETTER_SHADOW_COLOR = Color3.fromHex("#be185d")
+local LETTER_SHADOW_OPACITY = 0.28
+local LETTER_SHADOW_OFFSET = 2
+local LETTER_BASE = { 236, 72, 153 } -- #ec4899, the pink baked into the letter PNGs
+-- ImageLabels multiply the image by ImageColor3, so divide the target by the base color
+local SHADOW_TINT = Color3.new(
+	math.min(1, LETTER_SHADOW_COLOR.R * 255 / LETTER_BASE[1]),
+	math.min(1, LETTER_SHADOW_COLOR.G * 255 / LETTER_BASE[2]),
+	math.min(1, LETTER_SHADOW_COLOR.B * 255 / LETTER_BASE[3])
+)
+
+-- palette (from index.html :root)
+-- =====================================================================
+local C = {
+	win = Color3.fromHex("#17171c"),
+	side = Color3.fromHex("#1e1e24"),
+	panel = Color3.fromHex("#202027"),
+	row = Color3.fromHex("#26262d"),
+	rowH = Color3.fromHex("#2d2d35"),
+	txt = Color3.fromHex("#ececf1"),
+	mut = Color3.fromHex("#8b8b96"),
+	dim = Color3.fromHex("#67676f"),
+	tbar = Color3.fromHex("#f6f6f8"),
+	tbarTxt = Color3.fromHex("#3d3d45"),
+	tbarMut = Color3.fromHex("#5b5b64"),
+	hoverGrey = Color3.fromHex("#e7e7ec"),
+	closeRed = Color3.fromHex("#e81123"),
+	switchOff = Color3.fromHex("#3a3a43"),
+	selMenu = Color3.fromHex("#26262e"),
+	scroll = Color3.fromHex("#32323a"),
+	btnDark = Color3.fromHex("#f472b6"), -- pink, not red
+	black = Color3.fromRGB(10, 10, 16),
+	white = Color3.new(1, 1, 1),
+}
+local ACCENTS = {
+	Pink = { "#ec4899", "#f9a8d4" },
+	Purple = { "#8b5cf6", "#c4b5fd" },
+	Blue = { "#3b82f6", "#93c5fd" },
+	Green = { "#10b981", "#6ee7b7" },
+}
+local ACCENT = Color3.fromHex("#ec4899")
+local ACCENT2 = Color3.fromHex("#f9a8d4")
+local BORDER_T = 0.94 -- rgba(255,255,255,.06)
+
+local WIN_W, WIN_H, TBAR_H, SIDE_W = 790, 530, 38, 212
+local currentSec, currentTab, selectSection = nil, nil, nil
+local pillTo = nil
+local closePopup = nil
+
+-- font mapping (CSS weight -> Roblox font)
+local F_REG, F_MED, F_SEMI, F_BOLD, F_BLACK = Enum.Font.Gotham, Enum.Font.GothamMedium, Enum.Font.GothamSemibold, Enum.Font.GothamBold, Enum.Font.GothamBlack
+
+-- =====================================================================
+-- helpers
+-- =====================================================================
+local function new(class, props, parent)
+	local o = Instance.new(class)
+	if props then
+		for k, v in pairs(props) do
+			o[k] = v
+		end
+	end
+	if parent then
+		o.Parent = parent
+	end
+	return o
+end
+
+local function corner(o, r)
+	return new("UICorner", { CornerRadius = (r == 999) and UDim.new(1, 0) or UDim.new(0, r) }, o)
+end
+
+local function stroke(o, color, transp, thick)
+	return new("UIStroke", { Color = color or C.white, Transparency = transp or BORDER_T, Thickness = thick or 1 }, o)
+end
+
+local function label(parent, text, size, color, font, props)
+	local l = new("TextLabel", {
+		BackgroundTransparency = 1,
+		Text = text or "",
+		TextSize = size or 12,
+		TextColor3 = color or C.txt,
+		Font = font or F_REG,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Center,
+		Size = UDim2.new(1, 0, 0, 16),
+	}, parent)
+	if props then
+		for k, v in pairs(props) do
+			l[k] = v
+		end
+	end
+	return l
+end
+
+local function tween(obj, goal, dur, style, delayT)
+	local info = TweenInfo.new(dur, style or Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 0, false, delayT or 0)
+	local tw = TweenService:Create(obj, info, goal)
+	tw:Play()
+	return tw
+end
+
+local function textW(text, size, font)
+	return TextService:GetTextSize(text, size, font, Vector2.new(2000, 100)).X
+end
+
+-- =====================================================================
+-- spring engine (same constants as the web build)
+-- =====================================================================
+local springs = {}
+local ticks = {}
+local themes = {}
+local T = 0
+
+local function spring(x, k, d)
+	return { x = x, v = 0, t = x, k = k or 420, d = d or 22, live = false, dead = false }
+end
+local function wake(s)
+	if not s.live then
+		s.live = true
+		table.insert(springs, s)
+	end
+end
+local function setT(s, t)
+	s.t = t
+	wake(s)
+end
+local function kick(s, dv)
+	s.v = s.v + dv
+	wake(s)
+end
+local function snap(s, x)
+	s.x = x
+	s.t = x
+	s.v = 0
+end
+local function killWith(s, inst)
+	inst.Destroying:Connect(function()
+		s.dead = true
+	end)
+end
+local function tick(fn)
+	table.insert(ticks, fn)
+end
+local function themed(obj, fn)
+	table.insert(themes, function()
+		if not obj:IsDescendantOf(game) then
+			return false
+		end
+		fn()
+	end)
+end
+
+renderConn = RunService.RenderStepped:Connect(function(dt)
+	if not ALIVE then
+		return
+	end
+	dt = math.min(dt, 1 / 30)
+	T = T + dt
+	for i = #springs, 1, -1 do
+		local s = springs[i]
+		if s.dead then
+			s.live = false
+			table.remove(springs, i)
+		else
+			local a = -s.k * (s.x - s.t) - s.d * s.v
+			s.v = s.v + a * dt
+			s.x = s.x + s.v * dt
+			if math.abs(s.x - s.t) < 0.02 and math.abs(s.v) < 0.05 then
+				s.x = s.t
+				s.v = 0
+				s.live = false
+				table.remove(springs, i)
+			end
+		end
+	end
+	for i = #ticks, 1, -1 do
+		if ticks[i](dt) == false then
+			table.remove(ticks, i)
+		end
+	end
+end)
+
+-- squishy press feedback (hover / press / release), uses a UIScale spring
+-- per-element squish state, shared by squishy() and popStretch()
+local FX = setmetatable({}, { __mode = "k" })
+
+-- every squish is scaled around the element's center (CSS transform-origin: 50% 50%)
+local function toCenter(obj)
+	local A = obj.AnchorPoint
+	if A.X == 0.5 and A.Y == 0.5 then
+		return
+	end
+	local P, S = obj.Position, obj.Size
+	local function shift(p, sz, a)
+		local k = 0.5 - a
+		return UDim.new(p.Scale + sz.Scale * k, p.Offset + sz.Offset * k)
+	end
+	obj.Position = UDim2.new(shift(P.X, S.X, A.X), shift(P.Y, S.Y, A.Y))
+	obj.AnchorPoint = Vector2.new(0.5, 0.5)
+end
+
+-- how far the squish goes: the html values, pushed further (more aggressive)
+local SQUISH_GAIN = 1.6
+
+-- index.html @keyframes played from a start time: returns a function giving (scaleX, scaleY)
+local function kfPlay(KF, t0)
+	return function()
+		local t = T - t0
+		if t < 0 then
+			return KF[1][2], KF[1][3]
+		end
+		if t >= KF[#KF][1] then
+			return KF[#KF][2], KF[#KF][3]
+		end
+		for i = 1, #KF - 1 do
+			local a, b = KF[i], KF[i + 1]
+			if t <= b[1] then
+				local u = (t - a[1]) / (b[1] - a[1])
+				return a[2] + (b[2] - a[2]) * u, a[3] + (b[3] - a[3]) * u
+			end
+		end
+		return KF[#KF][2], KF[#KF][3]
+	end
+end
+
+-- CSS-style squish: hover -> scale(hovX, hovY), press -> scale(pressX, pressY).
+-- Uses Size, so X and Y stretch independently (like the html transform: scale(x, y)).
+local function squishy(btn, hovX, hovY, pressX, pressY, target, noCenter)
+	target = target or btn
+	if not noCenter then
+		toCenter(target)
+	end
+	hovX = hovX or 1.03
+	hovY = hovY or 1
+	pressX = pressX or 0.96
+	pressY = pressY or 1.04
+	hovX = 1 + (hovX - 1) * SQUISH_GAIN
+	hovY = 1 + (hovY - 1) * SQUISH_GAIN
+	pressX = 1 + (pressX - 1) * SQUISH_GAIN
+	pressY = 1 + (pressY - 1) * SQUISH_GAIN
+	local base = target.Size
+	local sx = spring(1, 420, 13) -- lower damping = more bounce
+	local sy = spring(1, 420, 13)
+	local fx = { px = spring(1, 300, 16), py = spring(1, 300, 16) }
+	FX[target] = fx
+	killWith(sx, target)
+	killWith(sy, target)
+	killWith(fx.px, target)
+	killWith(fx.py, target)
+	local hovering, pressing = false, false
+	local function aim()
+		if pressing then
+			setT(sx, pressX)
+			setT(sy, pressY)
+		elseif hovering then
+			setT(sx, hovX)
+			setT(sy, hovY)
+		else
+			setT(sx, 1)
+			setT(sy, 1)
+		end
+	end
+	local lastKX, lastKY = -1, -1
+	tick(function()
+		if target.Parent == nil then
+			return false
+		end
+		if fx.entering then
+			return true -- the row entrance owns Size until it finishes
+		end
+		local ek, ey = 1, 1
+		if fx.kf then
+			ek, ey = fx.kf()
+		end
+		local kx = sx.x * fx.px.x * ek
+		local ky = sy.x * fx.py.x * ey
+		-- only write when the size actually changes: every Size write re-runs the layout
+		if kx ~= lastKX or ky ~= lastKY then
+			lastKX, lastKY = kx, ky
+			target.Size = UDim2.new(base.X.Scale * kx, base.X.Offset * kx, base.Y.Scale * ky, base.Y.Offset * ky)
+		end
+		return true
+	end)
+	btn.MouseEnter:Connect(function()
+		hovering = true
+		aim()
+	end)
+	btn.MouseLeave:Connect(function()
+		hovering = false
+		pressing = false
+		aim()
+	end)
+	btn.MouseButton1Down:Connect(function()
+		pressing = true
+		aim()
+	end)
+	btn.MouseButton1Up:Connect(function()
+		pressing = false
+		aim()
+	end)
+	return sx
+end
+
+-- click feedback: goes OUT past full size, snaps back under it, then settles in.
+-- Keyframes (seconds, scaleX, scaleY) with overshoot on both sides, so it reads as an
+-- aggressive out-and-in with an elastic ease.
+local CLICK_KF = {
+	{ 0.00, 1.00, 1.00 },
+	{ 0.10, 1.16, 0.80 }, -- out, squashed tall
+	{ 0.22, 0.90, 1.14 }, -- back in, squashed wide
+	{ 0.34, 1.08, 0.94 }, -- out again, smaller
+	{ 0.46, 0.98, 1.03 },
+	{ 0.56, 1.00, 1.00 },
+}
+local function popStretch(obj)
+	local fx = FX[obj]
+	if not fx then
+		return
+	end
+	fx.kf = kfPlay(CLICK_KF, T)
+end
+
+-- =====================================================================
+-- flags + menu data (mirrors DATA in index.html)
+-- =====================================================================
+local Flags = {}
+local onFlag = {}
+
+-- configs: name -> snapshot of Flags. Names are unique (case-insensitive).
+local HttpService = game:GetService("HttpService")
+local CONFIG_FILE = "neko_configs.json"
+local settings = {} -- autoload = config name, cl_autoload_on, cl_silent
+local configs = {}
+local activeConfig = nil
+if readfile then
+	pcall(function()
+		local data = HttpService:JSONDecode(readfile(CONFIG_FILE))
+		if type(data) == "table" then
+			configs = type(data.configs) == "table" and data.configs or {}
+			settings = type(data.settings) == "table" and data.settings or {}
+		end
+	end)
+end
+-- auto load: apply the chosen config before the menu is built, so every control starts from it
+if settings.cl_autoload_on == true and settings.autoload and configs[settings.autoload] then
+	for k, v in pairs(configs[settings.autoload]) do
+		Flags[k] = v
+	end
+end
+Flags.cl_autoload_on = settings.cl_autoload_on == true
+Flags.cl_silent = settings.cl_silent == true
+local function copyFlags()
+	local t = {}
+	for k, v in pairs(Flags) do
+		t[k] = v
+	end
+	return t
+end
+local function saveConfigs()
+	if writefile then
+		pcall(function()
+			writefile(CONFIG_FILE, HttpService:JSONEncode({ configs = configs, settings = settings }))
+		end)
+	end
+end
+local function nameTaken(name)
+	for k in pairs(configs) do
+		if string.lower(k) == string.lower(name) then
+			return true
+		end
+	end
+	return false
+end
+
+local loadingConfig = false
+local function setFlag(id, value)
+	Flags[id] = value
+	if onFlag[id] then
+		onFlag[id](value)
+	end
+	-- the active config saves every change made after it was created
+	if activeConfig and not loadingConfig then
+		configs[activeConfig] = copyFlags()
+		saveConfigs()
+	end
+	-- the two Loading toggles are remembered on their own, so they survive restarts
+	if id == "cl_autoload_on" or id == "cl_silent" then
+		settings[id] = value
+		saveConfigs()
+	end
+end
+
+-- write the current settings into the active config; false if no config has been created yet
+local function saveActive()
+	if not activeConfig then
+		return false
+	end
+	configs[activeConfig] = copyFlags()
+	saveConfigs()
+	return true
+end
+
+-- load a saved config: every control updates to its saved value, then it becomes the active config
+local function applyConfig(name)
+	local c = configs[name]
+	if not c then
+		return false
+	end
+	loadingConfig = true
+	for k, v in pairs(c) do
+		if k ~= "cl_autoload_on" and k ~= "cl_silent" then
+			setFlag(k, v)
+		end
+	end
+	loadingConfig = false
+	activeConfig = name
+	saveConfigs()
+	return true
+end
+
+local function Tg(id, title, desc, def)
+	return { kind = "toggle", id = id, title = title, desc = desc, def = def == true }
+end
+local function Sel(id, title, desc, opts, def)
+	return { kind = "select", id = id, title = title, desc = desc, opts = opts, def = def }
+end
+local function Ky(id, title, desc, def)
+	return { kind = "key", id = id, title = title, desc = desc, def = def or "Unbound" }
+end
+local function Rg(id, title, desc, mn, mx, def, unit)
+	return { kind = "slider", id = id, title = title, desc = desc, min = mn, max = mx, def = def, unit = unit or "" }
+end
+local function Cl(id, title, desc, opts, def)
+	return { kind = "color", id = id, title = title, desc = desc, opts = opts, def = def }
+end
+local function Cf(id, title, desc)
+	return { kind = "cfgcreate", id = id, title = title, desc = desc }
+end
+local function Cp(id, title, desc)
+	return { kind = "cfgpick", id = id, title = title, desc = desc }
+end
+local function Cs(id, title, desc)
+	return { kind = "cfgsave", id = id, title = title, desc = desc }
+end
+local function Cq(id, title, desc)
+	return { kind = "cfgload", id = id, title = title, desc = desc }
+end
+local function Ul(id, title, desc, label_)
+	return { kind = "unload", id = id, title = title, desc = desc, label = label_ }
+end
+
+local DATA = {
+	{ id = "aiming", label = "Aiming", icon = "aim", tabs = {
+		{ id = "Main", groups = { { title = "Main", items = {
+			Tg("enabled", "Enabled", "Masterswitch for the aimbot"),
+			Sel("targeting", "Targeting Mode", "How the aimbot selects targets", { "Default", "Closest", "Lowest HP", "Random" }, "Default"),
+			Ky("aimkey", "Aimbot Key", "Activates the aimbot"),
+			Sel("keymode", "Key Mode", "How the aimbot key behaves", { "Hold", "Toggle" }, "Hold"),
+			Tg("sticky", "Sticky", "Locks onto the current target until it dies"),
+			Sel("aimmode", "Aim Mode", "How the aimbot moves your aim", { "Camera", "Mouse" }, "Camera"),
+			Tg("nosleep", "No Sleep", "Keeps the aimbot awake between kills"),
+			Rg("fov", "FOV", "Field of view used for target selection", 0, 180, 90, "°"),
+			Rg("smooth", "Smoothing", "How fluid the aim movement feels", 1, 20, 7),
+		} } } },
+		{ id = "Silent", groups = { { title = "Silent", items = {
+			Tg("s_enabled", "Enabled", "Masterswitch for silent aim"),
+			Rg("s_chance", "Hit Chance", "Probability of applying silent aim", 0, 100, 85, "%"),
+			Sel("s_pred", "Prediction", "Leads moving targets", { "Off", "Low", "Medium", "High" }, "Medium"),
+			Tg("s_wall", "Wall Check", "Skips targets behind walls", true),
+			Tg("s_team", "Ignore Teammates", "Never silent-aim at your team", true),
+		} } } },
+		{ id = "Triggerbot", groups = { { title = "Triggerbot", items = {
+			Tg("t_enabled", "Enabled", "Masterswitch for the triggerbot"),
+			Rg("t_delay", "Delay", "Milliseconds to wait before firing", 0, 300, 40, "ms"),
+			Sel("t_hitbox", "Hitbox", "Preferred hitbox to fire at", { "Head", "Torso", "Closest" }, "Head"),
+			Tg("t_vis", "Only Visible", "Fire only at targets you can see", true),
+		} } } },
+	} },
+	{ id = "visuals", label = "Visuals", icon = "vis", tabs = {
+		{ id = "Players", groups = { { title = "Players", items = {
+			Tg("v_enabled", "Enabled", "Masterswitch for player visuals"),
+			Tg("v_boxes", "Boxes", "Draws a box around players", true),
+			Sel("v_boxstyle", "Box Style", "How the boxes are drawn", { "Full", "Corners", "Filled" }, "Full"),
+			Tg("v_names", "Names", "Shows player names above boxes", true),
+			Tg("v_health", "Health Bar", "Renders a health bar next to boxes", true),
+			Tg("v_dist", "Distance", "Shows the distance in studs"),
+			Rg("v_max", "Max Distance", "Culls visuals beyond this range", 50, 2000, 800),
+			Cl("v_color", "Accent Color", "Color of the box outline", { "#ec4899", "#f43f5e", "#22d3ee", "#a3e635", "#facc15" }, "#ec4899"),
+		} } } },
+		{ id = "World", groups = { { title = "World", items = {
+			Tg("w_full", "Fullbright", "Removes darkness from the map"),
+			Tg("w_fog", "No Fog", "Strips fog from the world", true),
+			Sel("w_time", "Time of Day", "Forces a lighting mood", { "Default", "Dawn", "Noon", "Dusk", "Midnight" }, "Default"),
+			Tg("w_tex", "Remove Textures", "Flattens surfaces for clarity"),
+		} } } },
+		{ id = "Crosshair", groups = { { title = "Crosshair", items = {
+			Tg("c_enabled", "Enabled", "Draws a custom crosshair", true),
+			Sel("c_style", "Style", "Shape of the crosshair", { "Dot", "Cross", "Circle", "T" }, "Cross"),
+			Rg("c_size", "Size", "Overall crosshair size", 2, 40, 12),
+			Rg("c_thick", "Thickness", "Stroke width of the crosshair", 1, 8, 2),
+			Cl("c_color", "Color", "Crosshair color", { "#ffffff", "#ec4899", "#22d3ee", "#a3e635", "#facc15" }, "#ffffff"),
+		} } } },
+	} },
+	{ id = "misc", label = "Miscellaneous", icon = "misc", tabs = {
+		{ id = "Movement", groups = { { title = "Movement", items = {
+			Rg("g_speed", "Walk Speed", "Overrides your walk speed", 16, 200, 16),
+			Rg("g_jump", "Jump Power", "Overrides your jump power", 50, 300, 50),
+			Tg("g_inf", "Infinite Jump", "Jump again mid-air"),
+			Tg("g_fly", "Fly", "Ascend beyond the map"),
+			Tg("g_noclip", "Noclip", "Walk straight through walls"),
+		} } } },
+		{ id = "Character", groups = { { title = "Character", items = {
+			Tg("m_afk", "Anti AFK", "Keeps you connected while idle", true),
+			Ky("m_panic", "Panic Key", "Instantly hides everything"),
+			Tg("ch_nofall", "No Fall Damage", "Legs of steel, basically"),
+			Tg("ch_antirag", "Anti Ragdoll", "Stay on your feet"),
+		} } } },
+	} },
+	{ id = "cloud", label = "Cloud", icon = "cloud", tabs = {
+		{ id = "Configs", groups = { { title = "Configs", items = {
+			Tg("cl_sync", "Auto Sync", "Pushes changes as you make them", true),
+			Cs("cl_save", "Save Config", "Writes your current settings into the active config"),
+			Cq("cl_load", "Load Config", "Picks a saved config and applies it now"),
+		} },
+			{ title = "New Config", items = {
+				Cf("cl_new", "Create Config", "Name it, then your changes save to it"),
+			} },
+			{ title = "Auto Load", items = {
+				Cp("cl_autopick", "Auto Load Config", "The config that loads when Neko starts"),
+			} },
+		} },
+		{ id = "Settings", groups = {
+			{ title = "Settings", items = {
+				Ky("cl_key", "Menu Key", "Toggles the menu visibility", "RightShift"),
+				Sel("m_accent", "Theme Accent", "Recolors the whole menu live", { "Pink", "Purple", "Blue", "Green" }, "Pink"),
+				Tg("m_blur", "Blur Background", "Frosts the world behind the menu"),
+				Tg("m_shadow", "Window Glow", "Pink aura around the window", true),
+				Tg("m_wm", "Watermark", "Shows an fps + ping tag in the corner"),
+				Sel("cl_scale", "UI Scale", "Size of the interface", { "90%", "100%", "110%", "125%" }, "100%"),
+				Tg("cl_anim", "Animations", "Bouncy springs everywhere", true),
+			} },
+			{ title = "Unload", items = {
+				Ul("cl_unload", "Unload Neko", "Removes the menu and disconnects everything", "Unload Neko"),
+			} },
+			{ title = "Loading", items = {
+				Tg("cl_autoload_on", "Auto Load", "Loads your chosen config when Neko starts"),
+				Tg("cl_silent", "Silent Load", "Starts with the menu hidden, so it loads quietly"),
+			} },
+			{ title = "Performance", items = {
+				Sel("p_cap", "FPS Cap", "Frames the renderer is allowed", { "Unlocked", "60", "120", "144", "240" }, "Unlocked"),
+				Rg("p_scale", "Render Scale", "Internal resolution percentage", 50, 150, 100, "%"),
+				Tg("p_low", "Low Texture Mode", "Shrinks texture memory usage"),
+			} },
+		} },
+	} },
+	{ id = "games", label = "Games", icon = "games", tabs = {
+		{ id = "Universal", groups = { { title = "Universal", items = {
+			Sel("g_game", "Current Game", "Auto-detected from the place", { "Auto", "Arsenal", "Blox Fruits", "Da Hood" }, "Auto"),
+			Tg("g_mod", "Auto Load Module", "Applies game-specific tweaks", true),
+			Rg("g_fov", "Camera FOV", "Wides out your camera", 70, 120, 70, "°"),
+		} } } },
+		{ id = "Modules", groups = { { title = "Modules", items = {
+			Tg("mod_ars", "Arsenal", "Weapon-handling tweaks"),
+			Tg("mod_bf", "Blox Fruits", "Fruit & combat tweaks"),
+			Tg("mod_dh", "Da Hood", "Movement & combat tweaks"),
+		} } } },
+	} },
+}
+
+local ICON_GLYPH = { aim = "◎", vis = "◉", misc = "≡", cloud = "☁", games = "♙" }
+
+for _, sec in ipairs(DATA) do
+	for _, tab in ipairs(sec.tabs) do
+		for _, g in ipairs(tab.groups) do
+			for _, item in ipairs(g.items) do
+				if Flags[item.id] == nil then
+					Flags[item.id] = item.def
+				end
+			end
+		end
+	end
+end
+
+-- =====================================================================
+-- screen, backdrop, blur, watermark, hint
+-- =====================================================================
+local screen = new("ScreenGui", {
+	Name = "NekoUI",
+	ResetOnSpawn = false,
+	IgnoreGuiInset = true,
+	DisplayOrder = 50,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+}, guiParent())
+
+
+local blur = new("BlurEffect", { Size = 24, Enabled = false }, Lighting)
+_G.NEKO_STOP = function()
+	ALIVE = false
+	pcall(function()
+		game:GetService("ContextActionService"):UnbindAction("NekoSink")
+	end)
+	if renderConn then
+		renderConn:Disconnect()
+	end
+	pcall(function()
+		screen:Destroy()
+		blur:Destroy()
+	end)
+end
+
+local wm = new("CanvasGroup", {
+	AnchorPoint = Vector2.new(1, 0),
+	Position = UDim2.new(1, -16, 0, 14),
+	Size = UDim2.fromOffset(0, 26),
+	AutomaticSize = Enum.AutomaticSize.X,
+	BackgroundColor3 = C.black,
+	BackgroundTransparency = 0.55,
+	BorderSizePixel = 0,
+	Visible = false,
+	ZIndex = 5,
+}, screen)
+corner(wm, 9)
+stroke(wm)
+new("UIPadding", { PaddingLeft = UDim.new(0, 11), PaddingRight = UDim.new(0, 11) }, wm)
+new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4) }, wm)
+label(wm, "neko  •  ", 11, C.white, F_BOLD, { Size = UDim2.fromOffset(0, 16), AutomaticSize = Enum.AutomaticSize.X, LayoutOrder = 1 })
+local wmFps = label(wm, "60", 11, ACCENT2, F_BOLD, { Size = UDim2.fromOffset(0, 16), AutomaticSize = Enum.AutomaticSize.X, LayoutOrder = 2 })
+label(wm, " fps  •  ", 11, C.white, F_BOLD, { Size = UDim2.fromOffset(0, 16), AutomaticSize = Enum.AutomaticSize.X, LayoutOrder = 3 })
+local wmPing = label(wm, "12", 11, ACCENT2, F_BOLD, { Size = UDim2.fromOffset(0, 16), AutomaticSize = Enum.AutomaticSize.X, LayoutOrder = 4 })
+label(wm, " ms", 11, C.white, F_BOLD, { Size = UDim2.fromOffset(0, 16), AutomaticSize = Enum.AutomaticSize.X, LayoutOrder = 5 })
+themed(wmFps, function() wmFps.TextColor3 = ACCENT2 end)
+themed(wmPing, function() wmPing.TextColor3 = ACCENT2 end)
+
+local hint = new("Frame", {
+	AnchorPoint = Vector2.new(0, 1),
+	Position = UDim2.new(0, 16, 1, -16),
+	Size = UDim2.fromOffset(0, 28),
+	AutomaticSize = Enum.AutomaticSize.X,
+	BackgroundColor3 = Color3.fromHex("#0e0e14"),
+	BackgroundTransparency = 0.45,
+	BorderSizePixel = 0,
+	ZIndex = 5,
+}, screen)
+corner(hint, 10)
+stroke(hint)
+new("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }, hint)
+new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }, hint)
+local hintParts = {
+	{ "drag the titlebar   ·   ", C.mut, F_REG, 1 },
+	{ "Right Shift", ACCENT2, F_BOLD, 2 },
+	{ " toggles the menu   ·   everything is jelly, go click stuff", C.mut, F_REG, 3 },
+}
+for _, p in ipairs(hintParts) do
+	label(hint, p[1], 11.5, p[2], p[3], { Size = UDim2.fromOffset(0, 16), AutomaticSize = Enum.AutomaticSize.X, LayoutOrder = p[4] })
+end
+
+-- =====================================================================
+-- window
+-- =====================================================================
+local win = new("Frame", {
+	Name = "Win",
+	Size = UDim2.fromOffset(WIN_W, WIN_H),
+	AnchorPoint = Vector2.new(0.5, 0.5), -- rotate/scale around the center, like the html
+	BackgroundTransparency = 1,
+	ZIndex = 10,
+	Visible = false,
+}, screen)
+local winScale = new("UIScale", {}, win)
+
+-- glow behind the window (toggled by "Window Glow")
+local glow = new("Frame", {
+	Position = UDim2.fromOffset(-16, -16),
+	Size = UDim2.new(1, 32, 1, 32),
+	BackgroundColor3 = ACCENT,
+	BackgroundTransparency = 0.94,
+	BorderSizePixel = 0,
+	ZIndex = 0,
+}, win)
+corner(glow, 30)
+themed(glow, function()
+	glow.BackgroundColor3 = ACCENT
+end)
+
+local tbar -- titlebar, created below; the jelly tick moves it
+-- the window's body shape: the only thing that squashes and stretches (jelly)
+local shape = new("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromScale(1, 1),
+	BackgroundColor3 = C.win,
+	BorderSizePixel = 0,
+	ZIndex = 1,
+}, win)
+corner(shape, 14)
+local innerStroke = stroke(shape, ACCENT, 0.45, 1)
+-- content layer: fixed size, so text and rows never stretch or shift while the shape moves
+local inner = new("Frame", {
+	Size = UDim2.fromScale(1, 1),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	ClipsDescendants = false, -- rectangular clipping would square off the 14px corners
+	ZIndex = 1,
+}, win)
+themed(innerStroke, function()
+	innerStroke.Color = ACCENT
+end)
+
+local shadowOn = true
+local function setGlow(on)
+	shadowOn = on
+	tween(glow, { BackgroundTransparency = on and 0.94 or 1 }, 0.3)
+	innerStroke.Color = on and ACCENT or C.white
+	innerStroke.Transparency = on and 0.6 or 0.86
+end
+
+-- window motion springs (K110 / D13 like the web build)
+local px = spring(0, 110, 13)
+local py = spring(0, 110, 13)
+local sc = spring(1, 200, 12) -- a little bounce at the end of open/close
+local offY = spring(0, 230, 10) -- restore slide / minimize drop (bouncier, like --springier)
+-- index.html winIn (.65s): per-axis squash/stretch on open, 0% (.8,.86) -> 60% (1.03,.98) -> 80% (.99,1.01) -> 100%
+local openKF = nil
+-- content follows the black box only while opening and closing (not while it is dragged/bounced)
+local followUntil = 0
+local closingNow = false
+-- up/down bounce for open and close: low damping so it wobbles several times before settling
+local bounceY = spring(0, 260, 7)
+local rotX = spring(0, 300, 20) -- close tilt (winClose: rotate -2deg)
+local maxed = false
+local hidden = true
+local dragging = false
+local gx, gy = 0, 0
+local uiScaleSetting = 1
+
+local function winW()
+	return win.AbsoluteSize.X
+end
+local function clampTarget()
+	local vp = screen.AbsoluteSize
+	setT(px, math.clamp(px.t, -winW() + 90, vp.X - 90))
+	setT(py, math.clamp(py.t, 0, vp.Y - 46))
+end
+local function centerWindow()
+	local vp = screen.AbsoluteSize
+	setT(px, (vp.X - WIN_W) / 2)
+	setT(py, math.max(14, (vp.Y - WIN_H) / 2 - 10))
+	clampTarget()
+end
+
+tick(function()
+	local vp = screen.AbsoluteSize
+	local breath = 1 + math.sin(T * 1000 / 850) * 0.005
+	-- drag tilt: leans into the motion, more than before (up to 6 degrees), and reacts to vertical speed too
+	local rot = math.clamp(px.v * 0.022 + py.v * 0.004, -6, 6)
+	-- px/py are still the top-left corner; the anchor is the center, so add half the size
+	win.Position = UDim2.fromOffset(px.x + win.Size.X.Offset / 2, py.x + offY.x + bounceY.x + win.Size.Y.Offset / 2)
+	win.Rotation = rot + rotX.x
+	winScale.Scale = math.max(sc.x, 0) * breath * uiScaleSetting
+	-- jelly: stretch along the motion and squash across it, on the body only
+	-- (the window box itself stays put, so maximize and resize keep working)
+	local jx = math.clamp(math.abs(px.v) * 0.00012, 0, 0.05)
+	local jy = math.clamp(math.abs(py.v) * 0.0001, 0, 0.04)
+	shape.AnchorPoint = Vector2.new(0.5, 0.5)
+	shape.Position = UDim2.fromScale(0.5, 0.5)
+	local ox, oy = 1, 1
+	if openKF then
+		ox, oy = openKF()
+	end
+	shape.Size = UDim2.new((1 + jx - jy * 0.5) * ox, 0, (1 + jy - jx * 0.5) * oy, 0)
+	-- content: matches the box while opening / closing, otherwise stays put
+	inner.AnchorPoint = Vector2.new(0.5, 0.5)
+	inner.Position = UDim2.fromScale(0.5, 0.5)
+	if T < followUntil or closingNow then
+		inner.Size = shape.Size
+	else
+		inner.Size = UDim2.fromScale(1, 1)
+	end
+	-- the white titlebar follows the black shape: same width, same top edge
+	tbar.AnchorPoint = Vector2.new(0.5, 0)
+	tbar.Position = UDim2.new(0.5, 0, 0.5 - (1 + jy - jx * 0.5) * oy / 2, 0)
+	tbar.Size = UDim2.new((1 + jx - jy * 0.5) * ox, 0, 0, TBAR_H)
+	-- glow + stroke already handled by setGlow
+	return true
+end)
+
+-- titlebar
+tbar = new("Frame", { Size = UDim2.new(1, 0, 0, TBAR_H), BackgroundColor3 = C.tbar, BorderSizePixel = 0, ZIndex = 3 }, inner)
+corner(tbar, 14)
+-- square off the bottom of the titlebar so only the top corners are round
+new("Frame", { Position = UDim2.new(0, 0, 0, TBAR_H - 14), Size = UDim2.new(1, 0, 0, 14), BackgroundColor3 = C.tbar, BorderSizePixel = 0, ZIndex = 2 }, tbar)
+local tbarDrag = new("TextButton", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "", AutoButtonColor = false, ZIndex = 2 }, tbar)
+local tIcon = new("Frame", { Position = UDim2.fromOffset(12, 11), Size = UDim2.fromOffset(15, 15), BackgroundTransparency = 1, ZIndex = 3 }, tbar)
+if ASSETS.flower ~= "" then
+	new("ImageLabel", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Image = ASSETS.flower, ImageColor3 = ACCENT, ZIndex = 3 }, tIcon)
+else
+	label(tbar, "✿", 13, ACCENT, F_BOLD, { Position = UDim2.fromOffset(12, 0), Size = UDim2.fromOffset(15, TBAR_H), ZIndex = 3 })
+	tIcon:Destroy()
+end
+label(tbar, "Neko", 12, C.tbarTxt, TITLE_FONT, { Position = UDim2.fromOffset(34, 0), Size = UDim2.new(0, 120, 1, 0), ZIndex = 3 })
+new("Frame", { Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 1, -1), BackgroundColor3 = Color3.fromHex("#e4e4ea"), BorderSizePixel = 0, ZIndex = 3 }, tbar)
+
+local function titleBtn(glyph, xOff, hoverBg, hoverFg, onClick, name, asset)
+	local b = new("TextButton", {
+		Name = name,
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, xOff, 0.5, 0),
+		Size = UDim2.fromOffset(36, 26),
+		BackgroundColor3 = hoverBg,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Text = glyph,
+		TextSize = 13,
+		Font = F_BOLD,
+		TextColor3 = C.tbarMut,
+		AutoButtonColor = false,
+		ZIndex = 4,
+	}, tbar)
+	corner(b, 7)
+	local img = nil
+	if asset and asset ~= "" then
+		b.Text = ""
+		img = new("ImageLabel", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(12, 12),
+			BackgroundTransparency = 1, Image = asset, ImageColor3 = C.tbarMut, ZIndex = 5,
+		}, b)
+	end
+	b.MouseEnter:Connect(function()
+		tween(b, { BackgroundTransparency = 0, TextColor3 = hoverFg }, 0.15)
+		if img then
+			tween(img, { ImageColor3 = hoverFg }, 0.15)
+		end
+	end)
+	b.MouseLeave:Connect(function()
+		tween(b, { BackgroundTransparency = 1, TextColor3 = C.tbarMut }, 0.15)
+		if img then
+			tween(img, { ImageColor3 = C.tbarMut }, 0.15)
+		end
+	end)
+	b.Activated:Connect(onClick)
+	squishy(b, 1.12, 0.88, 0.88, 1.1)
+	return b
+end
+
+-- forward declarations for the window controls
+local hideWin, showWin, sinkOn, sinkOff
+
+titleBtn("—", -84, C.hoverGrey, C.tbarTxt, function()
+	hideWin("min")
+end, "min", ASSETS.chrome.min)
+titleBtn("▢", -46, C.hoverGrey, C.tbarTxt, function()
+	maxed = not maxed
+	if maxed then
+		local vp = screen.AbsoluteSize
+		tween(win, { Size = UDim2.fromOffset(vp.X - 24, vp.Y - 24) }, 0.45, Enum.EasingStyle.Quint)
+		setT(px, 12)
+		setT(py, 12)
+	else
+		tween(win, { Size = UDim2.fromOffset(WIN_W, WIN_H) }, 0.45, Enum.EasingStyle.Quint)
+		centerWindow()
+	end
+	clampTarget()
+end, "max", ASSETS.chrome.max)
+titleBtn("✕", -8, C.closeRed, C.white, function()
+	hideWin("closing")
+end, "close", ASSETS.chrome.close)
+
+-- body
+local body = new("Frame", { Position = UDim2.fromOffset(0, TBAR_H), Size = UDim2.new(1, 0, 1, -TBAR_H), BackgroundTransparency = 1, ZIndex = 2 }, inner)
+local side = new("Frame", { Position = UDim2.fromOffset(0, -14), Size = UDim2.new(0, SIDE_W, 1, 14), BackgroundColor3 = C.side, BorderSizePixel = 0, ZIndex = 2 }, body)
+corner(side, 14)
+new("Frame", { Position = UDim2.new(1, -1, 0, 0), Size = UDim2.new(0, 1, 1, 0), BackgroundColor3 = C.white, BackgroundTransparency = BORDER_T, BorderSizePixel = 0 }, side)
+local main = new("Frame", { Position = UDim2.fromOffset(SIDE_W, 0), Size = UDim2.new(1, -SIDE_W, 1, 0), BackgroundTransparency = 1, ZIndex = 2 }, body)
+
+-- drag: pointer hit on titlebar, window follows with springs
+local activeDrag = nil
+tbarDrag.MouseButton1Down:Connect(function()
+	local m = guiMouse()
+	dragging = true
+	closePopup()
+	setT(sc, 1.02)
+	kick(sc, -1.6) -- grab squish
+	gx = m.X - px.t
+	gy = m.Y - py.t
+	activeDrag = function(mouse)
+		setT(px, mouse.X - gx)
+		setT(py, mouse.Y - gy)
+		clampTarget()
+	end
+end)
+
+-- =====================================================================
+-- sidebar: logo (letters + flower/cloud), nav, footer
+-- =====================================================================
+-- logo box, as laid out in CSS: 212 - 24 padding = 188 x 58
+local LOGO_W, LOGO_H = 188, 58
+local logo = new("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromOffset(12 + LOGO_W / 2, 16 + LOGO_H / 2),
+	Size = UDim2.fromOffset(LOGO_W, LOGO_H),
+	BackgroundTransparency = 1,
+	ZIndex = 2,
+}, side)
+local logoScale = new("UIScale", {}, logo)
+local logoIn = spring(0.5, 300, 16)
+local logoHit = new("TextButton", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "", AutoButtonColor = false, ZIndex = 3 }, logo)
+
+-- flower + cloud, drawn with the exact SVG geometry (128 x 52 viewBox at 30,3)
+local mark = new("Frame", { Position = UDim2.fromOffset(30, 3), Size = UDim2.fromOffset(128, 52), BackgroundTransparency = 1, ZIndex = 2 }, logo)
+if ASSETS.logoMark ~= "" then
+	new("ImageLabel", { Position = UDim2.fromOffset(11, 7), Size = UDim2.fromOffset(92, 42), BackgroundTransparency = 1, Image = ASSETS.logoMark, ZIndex = 2 }, mark)
+elseif ASSETS.logoFlower ~= "" or ASSETS.cloud ~= "" then
+	-- PNGs are cropped to the shape bounding box: origin (11,7), size 92x42 css px (see assets/logo_layout.json)
+	if ASSETS.cloud ~= "" then
+		new("ImageLabel", { Position = UDim2.fromOffset(11, 7), Size = UDim2.fromOffset(92, 42), BackgroundTransparency = 1, Image = ASSETS.cloud, ZIndex = 2 }, mark)
+	end
+	if ASSETS.logoFlower ~= "" then
+		new("ImageLabel", { Position = UDim2.fromOffset(11, 7), Size = UDim2.fromOffset(92, 42), BackgroundTransparency = 1, Image = ASSETS.logoFlower, ZIndex = 3 }, mark)
+	end
+else
+	local function circ(cx, cy, r, col, z)
+		local f = new("Frame", { Position = UDim2.fromOffset(cx - r, cy - r), Size = UDim2.fromOffset(r * 2, r * 2), BackgroundColor3 = col, BorderSizePixel = 0, ZIndex = z }, mark)
+		corner(f, 999)
+	end
+	local pink = Color3.fromHex("#f472b6")
+	for _, p in ipairs({ { 30, 14 }, { 20, 20 }, { 18, 30 }, { 24, 39 }, { 34, 42 }, { 43, 37 }, { 45, 26 }, { 40, 16 } }) do
+		circ(p[1], p[2], 7, pink, 2)
+	end
+	for _, p in ipairs({ { 46, 30, 12 }, { 62, 24, 14 }, { 80, 28, 12 }, { 94, 32, 9 } }) do
+		circ(p[1], p[2], p[3], C.white, 3)
+	end
+	local pill = new("Frame", { Position = UDim2.fromOffset(46, 28), Size = UDim2.fromOffset(48, 14), BackgroundColor3 = C.white, BorderSizePixel = 0, ZIndex = 3 }, mark)
+	corner(pill, 7)
+end
+
+-- logo letters: Titan One metrics from index.html (26px, line-height 1)
+local WORD_W = 76.102
+local WORD_LEFT = 0.55 * LOGO_W - WORD_W / 2
+local WORD_TOP = LOGO_H / 2 - 0.56 * 26
+local LETTER_DEF = {
+	{ name = "n", w = 17.498, x = 0, y = 1, rot = -8 },
+	{ name = "e", w = 16.64, x = 17.498, y = -2, rot = 4 },
+	{ name = "k", w = 16.536, x = 34.138, y = 2, rot = -5 },
+	{ name = "o", w = 17.81, x = 50.674, y = -1, rot = 7 },
+	{ name = "period", w = 7.618, x = 68.484, y = 2, rot = 0, char = "." },
+}
+local letters = {}
+for i, d in ipairs(LETTER_DEF) do
+	local cx = WORD_LEFT + d.x + d.w / 2
+	local cy = WORD_TOP + 13
+	local frame
+	if ASSETS.letters[d.name] ~= "" then
+		frame = new("ImageLabel", {
+			Size = UDim2.fromOffset(d.w, 26),
+			BackgroundTransparency = 1,
+			Image = ASSETS.letters[d.name],
+			ZIndex = 4,
+		}, logo)
+	else
+		frame = new("TextLabel", {
+			Size = UDim2.fromOffset(d.w, 26),
+			BackgroundTransparency = 1,
+			Text = d.char or d.name,
+			Font = TITLE_FONT,
+			TextSize = 26,
+			TextColor3 = ACCENT,
+			TextStrokeColor3 = Color3.fromHex("#be185d"),
+			TextStrokeTransparency = 0.72,
+			ZIndex = 4,
+		}, logo)
+	end
+	if frame:IsA("TextLabel") then
+		themed(frame, function()
+			frame.TextColor3 = ACCENT
+		end)
+	end
+	frame.AnchorPoint = Vector2.new(0.5, 0.5)
+	frame.Position = UDim2.fromOffset(cx, cy + d.y)
+	local sc2 = new("UIScale", {}, frame)
+	local shadow, shadowSc
+	if frame:IsA("ImageLabel") then
+		-- sibling behind the letter (ZIndex 3 < 4), so it can't draw over the letter
+		shadow = new("ImageLabel", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Size = UDim2.fromOffset(d.w, 26),
+			BackgroundTransparency = 1,
+			Image = ASSETS.letters[d.name],
+			ImageColor3 = SHADOW_TINT,
+			ImageTransparency = 1 - LETTER_SHADOW_OPACITY,
+			ZIndex = 3,
+		}, logo)
+		shadowSc = new("UIScale", {}, shadow)
+	end
+	local st = {
+		frame = frame,
+		cx = cx,
+		cy = cy,
+		rot = d.rot,
+		oy = spring(0, 380, 14),
+		sc = spring(0, 380, 14),
+		rr = spring(0, 380, 14), -- rotation offset (intro: -25 -> 0)
+		pr = spring(1, 420, 18), -- press squash
+		sc2 = sc2,
+		yoff = d.y,
+		shadow = shadow,
+		shadowSc = shadowSc,
+	}
+	killWith(st.oy, frame)
+	killWith(st.sc, frame)
+	killWith(st.rr, frame)
+	letters[i] = st
+end
+
+-- logo frame update: bob (lbob), float (logoFloat), and the pop springs
+tick(function()
+	local f = 0
+	if T > 1.2 then
+		f = (1 - math.cos(2 * math.pi * (T - 1.2) / 5.5)) / 2
+	end
+	mark.Position = UDim2.fromOffset(30, 3 - 3 * f)
+	mark.Rotation = -1.5 * f
+	logoScale.Scale = math.max(logoIn.x, 0)
+	local bobPhase = (1 - math.cos(2 * math.pi * T / 2.6)) / 2
+	for _, st in ipairs(letters) do
+		local sv = math.clamp(st.sc.x, 0, 1)
+		local yo = st.oy.x - bobPhase * 2.5
+		st.frame.Position = UDim2.fromOffset(st.cx, st.cy + st.yoff + yo)
+		st.frame.Rotation = st.rot + st.rr.x
+		st.sc2.Scale = math.max(st.sc.x, 0) * st.pr.x
+		if st.shadow then
+			st.shadow.Position = UDim2.fromOffset(st.cx, st.cy + st.yoff + yo + LETTER_SHADOW_OFFSET)
+			st.shadow.Rotation = st.rot + st.rr.x
+			st.shadow.ImageTransparency = 1 - sv * LETTER_SHADOW_OPACITY
+			st.shadowSc.Scale = st.sc2.Scale
+		end
+		if st.frame:IsA("TextLabel") then
+			st.frame.TextTransparency = 1 - sv
+		elseif st.frame:IsA("ImageLabel") then
+			st.frame.ImageTransparency = 1 - sv
+		end
+	end
+	return true
+end)
+
+-- logo intro: plays once each time the window opens, never on hover-leave
+local function playLogoIntro()
+	snap(logoIn, 0.5)
+	setT(logoIn, 1)
+	for i, st in ipairs(letters) do
+		snap(st.oy, 16)
+		snap(st.sc, 0)
+		snap(st.rr, -25)
+		task.delay(0.25 + (i - 1) * 0.09, function()
+			if st.oy.dead then
+				return
+			end
+			setT(st.oy, 0)
+			setT(st.sc, 1)
+			setT(st.rr, 0)
+		end)
+	end
+end
+
+-- hover: each letter jumps (ljump), the intro does not replay
+logoHit.MouseEnter:Connect(function()
+	for i, st in ipairs(letters) do
+		task.delay((i - 1) * 0.07, function()
+			if not st.oy.dead then
+				kick(st.oy, -260)
+			end
+		end)
+	end
+end)
+
+logoHit.MouseButton1Down:Connect(function()
+	for _, st in ipairs(letters) do
+		kick(st.pr, -0.8)
+	end
+end)
+
+-- nav (taffy pill: leading and trailing edges on different springs)
+-- pill selection kick: very aggressive squash/stretch, out then in (like the toggle knob)
+local PILL_KF = { { 0, 1, 1 }, { 0.12, 1.35, 0.6 }, { 0.26, 0.8, 1.3 }, { 0.4, 1.1, 0.9 }, { 0.55, 1, 1 } }
+local function kickPill(P)
+	P.kf = kfPlay(PILL_KF, T)
+end
+
+local function makePill(parent, horizontal)
+	local f = new("Frame", { BackgroundColor3 = C.rowH, BorderSizePixel = 0, ZIndex = 1 }, parent)
+	corner(f, 10)
+	stroke(f, C.white, 0.94, 1)
+	-- index.html: tabX = Spring(0) (420, 22), tabW = Spring(0, 420, 26)
+	local a = spring(0, 420, 22)
+	local b = spring(0, 420, 26)
+	killWith(a, f)
+	killWith(b, f)
+	local P = { frame = f, a = a, b = b }
+	tick(function()
+		if f.Parent == nil then
+			return false
+		end
+		-- taffy: stretch with velocity, anchored on the side the pill is moving away from
+		local st = math.clamp(a.v * 0.0012, -0.4, 0.4)
+		local w = math.max(b.x - a.x, 6)
+		local sw = w * (1 + math.abs(st))
+		local start = a.x
+		if a.v < 0 then
+			start = b.x - sw
+		end
+		local ex, ey = 1, 1
+		if P.kf then
+			ex, ey = P.kf()
+		end
+		if horizontal then
+			-- sorta opacity: a little see-through while it slides, solid when it lands
+			f.BackgroundTransparency = math.clamp(0.1 + math.abs(a.v) * 0.0006, 0.1, 0.5)
+		end
+		if horizontal then
+			local H = 28
+			local nw = sw * ex
+			local px0 = start + sw / 2 - nw / 2
+			local pw = f.Parent.AbsoluteSize.X
+			if pw > 0 then
+				px0 = math.clamp(px0, 0, math.max(0, pw - nw)) -- never past the tab bar edges
+			end
+			f.Position = UDim2.fromOffset(px0, (H - H * ey) / 2)
+			f.Size = UDim2.fromOffset(nw, H * ey)
+		else
+			local nh = sw * ey
+			f.Position = UDim2.new(0.5 * (1 - ex), 0, 0, start + sw / 2 - nh / 2)
+			f.Size = UDim2.new(ex, 0, 0, nh)
+		end
+		return true
+	end)
+	return P
+end
+
+local NAV_STEP = 38
+local navFrame = new("Frame", { Position = UDim2.fromOffset(12, 89), Size = UDim2.new(1, -24, 0, 300), BackgroundTransparency = 1, ZIndex = 2 }, side)
+local navPill = makePill(navFrame, false)
+local navBtns = {}
+local navPaint = {} -- per section: function that colours that section's icon
+
+local function setNavOn(i)
+	for j, nb in ipairs(navBtns) do
+		local on = (j == i)
+		tween(nb, { TextColor3 = on and ACCENT2 or C.mut }, 0.2)
+		if navPaint[j] then
+			navPaint[j](on and ACCENT2 or C.mut, 0.2) -- selected tab: icon goes pink too
+		end
+	end
+end
+
+for si, sec in ipairs(DATA) do
+	local y = (si - 1) * NAV_STEP
+	local nb = new("TextButton", {
+		Size = UDim2.new(1, 0, 0, 36),
+		Position = UDim2.fromOffset(0, y),
+		BackgroundTransparency = 1,
+		Text = "",
+		AutoButtonColor = false,
+		ZIndex = 3,
+	}, navFrame)
+	local iconHolder = new("Frame", { Position = UDim2.fromOffset(11, 10), Size = UDim2.fromOffset(15, 15), BackgroundTransparency = 1, ZIndex = 3 }, nb)
+	local iconAsset = ASSETS.icons[sec.icon]
+	if iconAsset and iconAsset ~= "" then
+		new("ImageLabel", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Image = iconAsset, ImageColor3 = C.mut, ZIndex = 3 }, iconHolder)
+	else
+		label(iconHolder, ICON_GLYPH[sec.icon] or "•", 13, C.mut, F_BOLD, { Size = UDim2.fromScale(1, 1), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3 })
+	end
+	local nlabel = label(nb, sec.label, 12.5, C.mut, F_SEMI, { Position = UDim2.fromOffset(36, 0), Size = UDim2.new(1, -40, 1, 0), ZIndex = 3 })
+	navBtns[si] = nlabel
+	-- make the label itself the press target
+	-- hover: the label and the icon both turn white
+	local function paintIcon(col, dur)
+		for _, c in ipairs(iconHolder:GetChildren()) do
+			if c:IsA("ImageLabel") then
+				tween(c, { ImageColor3 = col }, dur or 0.15)
+			elseif c:IsA("TextLabel") then
+				tween(c, { TextColor3 = col }, dur or 0.15)
+			end
+		end
+	end
+	navPaint[si] = paintIcon
+	nb.MouseEnter:Connect(function()
+		if sec ~= currentSec then
+			tween(nlabel, { TextColor3 = C.white }, 0.15)
+			paintIcon(C.white)
+		end
+	end)
+	nb.MouseLeave:Connect(function()
+		if sec ~= currentSec then
+			tween(nlabel, { TextColor3 = C.mut }, 0.15)
+			paintIcon(C.mut)
+		end
+	end)
+	nb.Activated:Connect(function()
+		selectSection(sec)
+	end)
+	local icSc = new("UIScale", {}, iconHolder)
+	nb.MouseEnter:Connect(function()
+		tween(icSc, { Scale = 1.25 }, 0.45, Enum.EasingStyle.Back)
+		tween(iconHolder, { Rotation = -10 }, 0.45, Enum.EasingStyle.Back)
+	end)
+	nb.MouseLeave:Connect(function()
+		tween(icSc, { Scale = 1 }, 0.45, Enum.EasingStyle.Back)
+		tween(iconHolder, { Rotation = 0 }, 0.45, Enum.EasingStyle.Back)
+	end)
+	-- .navitem:active svg scale(.85)
+	nb.MouseButton1Down:Connect(function()
+		tween(icSc, { Scale = 0.85 }, 0.1)
+	end)
+	nb.MouseButton1Up:Connect(function()
+		tween(icSc, { Scale = 1.25 }, 0.35, Enum.EasingStyle.Back)
+	end)
+	squishy(nb, 1.05, 0.94, 0.96, 1.05)
+end
+
+label(side, "build v2.4.1", 10, C.dim, F_REG, {
+	AnchorPoint = Vector2.new(0.5, 1),
+	Position = UDim2.new(0.5, 0, 1, -12),
+	Size = UDim2.new(1, -24, 0, 14),
+	TextXAlignment = Enum.TextXAlignment.Center,
+	ZIndex = 2,
+})
+
+-- =====================================================================
+-- topbar: tabs (taffy pill) + search
+-- =====================================================================
+local topbar = new("Frame", { Size = UDim2.new(1, 0, 0, 52), BackgroundTransparency = 1, ZIndex = 2 }, main)
+local tabsEl = new("Frame", { Position = UDim2.fromOffset(14, 13), Size = UDim2.new(1, -200, 0, 28), BackgroundTransparency = 1, ZIndex = 2 }, topbar)
+local tabPill = nil
+local tabPillOutline = nil
+local tabBtns = {}
+
+local searchBox = new("Frame", {
+	AnchorPoint = Vector2.new(1, 0),
+	Position = UDim2.new(1, -14, 0, 13),
+	Size = UDim2.fromOffset(172, 28),
+	BackgroundColor3 = C.panel,
+	BorderSizePixel = 0,
+	ZIndex = 2,
+}, topbar)
+corner(searchBox, 999)
+local searchStroke = stroke(searchBox, C.white, 0.94, 1)
+local searchW = spring(172, 300, 20)
+local searchIcon
+if ASSETS.chrome.search ~= "" then
+	searchIcon = new("ImageLabel", { Position = UDim2.fromOffset(10, 8), Size = UDim2.fromOffset(13, 13), BackgroundTransparency = 1, Image = ASSETS.chrome.search, ImageColor3 = C.dim, ZIndex = 3 }, searchBox)
+else
+	searchIcon = label(searchBox, "⌕", 13, C.dim, F_BOLD, { Position = UDim2.fromOffset(10, 0), Size = UDim2.fromOffset(14, 28), ZIndex = 3 })
+end
+local iconColorKey = searchIcon:IsA("ImageLabel") and "ImageColor3" or "TextColor3"
+local searchIn = new("TextBox", {
+	Position = UDim2.fromOffset(28, 0),
+	Size = UDim2.new(1, -36, 1, 0),
+	BackgroundTransparency = 1,
+	Text = "",
+	PlaceholderText = "Search",
+	PlaceholderColor3 = C.dim,
+	TextColor3 = C.txt,
+	Font = F_MED,
+	TextSize = 12,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	ClearTextOnFocus = false,
+	ZIndex = 3,
+}, searchBox)
+tick(function()
+	if searchBox.Parent == nil then
+		return false
+	end
+	searchBox.Size = UDim2.fromOffset(math.floor(searchW.x + 0.5), 28)
+	return true
+end)
+searchIn.Focused:Connect(function()
+	setT(searchW, 214)
+	tween(searchStroke, { Transparency = 0.45 }, 0.2)
+	searchStroke.Color = ACCENT
+	tween(searchIcon, { Rotation = -90, [iconColorKey] = ACCENT2 }, 0.5, Enum.EasingStyle.Back)
+end)
+searchIn.FocusLost:Connect(function()
+	setT(searchW, 172)
+	tween(searchStroke, { Transparency = 0.94 }, 0.2)
+	searchStroke.Color = C.white
+	tween(searchIcon, { Rotation = 0, [iconColorKey] = C.dim }, 0.4, Enum.EasingStyle.Back)
+end)
+
+-- =====================================================================
+-- page: scroll + groups + rows + controls
+-- =====================================================================
+local pageArea = new("Frame", { Position = UDim2.fromOffset(0, 52), Size = UDim2.new(1, 0, 1, -52), BackgroundTransparency = 1, ClipsDescendants = true, ZIndex = 2 }, main)
+local pageHolder = nil
+local rowsIndex = {} -- { row, group, q }
+local groupsIndex = {}
+local emptyMsg = nil
+
+local listening = nil -- keybind capture
+local popup = nil -- { frame, sp, btn }
+
+local function inside(gui, m)
+	local p, s2 = gui.AbsolutePosition, gui.AbsoluteSize
+	return m.X >= p.X and m.X <= p.X + s2.X and m.Y >= p.Y and m.Y <= p.Y + s2.Y
+end
+
+closePopup = function()
+	if not popup then
+		return
+	end
+	local p = popup
+	popup = nil
+	setT(p.sp, 0)
+	tween(p.arrow, { Rotation = 0 }, 0.3)
+	local bs = p.btn:FindFirstChildOfClass("UIStroke")
+	if bs then
+		tween(bs, { Color = C.white, Transparency = 0.94 }, 0.25)
+	end
+	task.delay(0.3, function()
+		if p.frame then
+			p.frame:Destroy()
+			if p.shadow then
+				p.shadow:Destroy()
+			end
+		end
+	end)
+end
+
+local function openPopup(btn, opts, current, onPick, arrow)
+	closePopup()
+	local rowH = 28
+	local total = #opts * rowH + 8
+	local bw = btn.AbsoluteSize.X
+	local menuW = math.max(bw, 130)
+	local vp = screen.AbsoluteSize
+	local function place()
+		local ax, ay = btn.AbsolutePosition.X, btn.AbsolutePosition.Y
+		local bh = math.max(btn.AbsoluteSize.Y, btn.Size.Y.Offset)
+		local y = ay + bh + 6 + 65 -- below the button, moved down 65px as asked
+		if y + total > vp.Y - 8 then
+			y = math.max(8, ay - total - 6) -- flip up near the bottom
+		end
+		return math.clamp(ax, 8, vp.X - menuW - 8), y
+	end
+	local px0, py0 = place()
+	local f = new("Frame", {
+		Position = UDim2.fromOffset(px0, py0),
+		Size = UDim2.fromOffset(menuW, 0),
+		BackgroundColor3 = C.selMenu,
+		BorderSizePixel = 0,
+		ClipsDescendants = true,
+		ZIndex = 60,
+	}, screen)
+	corner(f, 11)
+	stroke(f, C.white, 0.94, 1)
+	-- drop shadow behind the menu, sized and moved with it
+	local sh = new("Frame", { BackgroundColor3 = C.black, BackgroundTransparency = 0.6, BorderSizePixel = 0, ZIndex = 59 }, screen)
+	corner(sh, 14)
+	local sp = spring(0, 420, 24)
+	killWith(sp, f)
+	tick(function()
+		if f.Parent == nil then
+			return false
+		end
+		local nx, ny = place()
+		local h = math.max(sp.x, 0)
+		f.Position = UDim2.fromOffset(nx, ny)
+		f.Size = UDim2.fromOffset(menuW, h)
+		sh.Position = UDim2.fromOffset(nx - 2, ny + 6)
+		sh.Size = UDim2.fromOffset(menuW + 4, h > 0 and h + 4 or 0)
+		return true
+	end)
+	for i, o in ipairs(opts) do
+		local isCur = (o == current)
+		local restPos = UDim2.fromOffset(4, 4 + (i - 1) * rowH)
+		local ob = new("TextButton", {
+			Size = UDim2.new(1, -8, 0, rowH),
+			Position = restPos,
+			BackgroundColor3 = isCur and ACCENT or C.rowH,
+			BackgroundTransparency = isCur and 0.87 or 1,
+			BorderSizePixel = 0,
+			Text = tostring(o),
+			Font = F_MED,
+			TextSize = 11.5,
+			TextColor3 = isCur and ACCENT2 or C.mut,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			AutoButtonColor = false,
+			ZIndex = 61,
+		}, f)
+		corner(ob, 8)
+		squishy(ob, 1.02, 0.97, 0.96, 1.04, nil, true) -- options keep their top-left positions
+		new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }, ob)
+		if isCur then
+			if ASSETS.chrome.tick ~= "" then
+				new("ImageLabel", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0), Size = UDim2.fromOffset(11, 11), BackgroundTransparency = 1, Image = ASSETS.chrome.tick, ImageColor3 = ACCENT2, ZIndex = 62 }, ob)
+			else
+				label(ob, "✓", 11, ACCENT2, F_BOLD, { Size = UDim2.new(1, 0, 1, 0), TextXAlignment = Enum.TextXAlignment.Right, ZIndex = 62 })
+			end
+		end
+		ob.MouseEnter:Connect(function()
+			-- .opt:hover -> translateX(3px) scale(1.02)
+			tween(ob, { BackgroundTransparency = 0, BackgroundColor3 = C.rowH, TextColor3 = C.txt, Position = UDim2.fromOffset(7, 4 + (i - 1) * rowH) }, 0.15)
+		end)
+		ob.MouseLeave:Connect(function()
+			local goal = { Position = restPos }
+			if isCur then
+				goal.BackgroundTransparency = 0.87
+				goal.BackgroundColor3 = ACCENT
+				goal.TextColor3 = ACCENT2
+			else
+				goal.BackgroundTransparency = 1
+				goal.TextColor3 = C.mut
+			end
+			tween(ob, goal, 0.15)
+		end)
+		ob.Activated:Connect(function()
+			onPick(o)
+			closePopup()
+		end)
+	end
+	popup = { frame = f, sp = sp, btn = btn, arrow = arrow, shadow = sh }
+	setT(sp, total)
+	tween(arrow, { Rotation = 180 }, 0.35, Enum.EasingStyle.Back)
+	local bs = btn:FindFirstChildOfClass("UIStroke")
+	if bs then
+		tween(bs, { Color = ACCENT, Transparency = 0.55 }, 0.2) -- .sel.open .selbtn border
+	end
+end
+
+-- controls ------------------------------------------------------------
+local CONTROLS = {}
+do
+local function ctrlToggle(row, item)
+	local startOn = Flags[item.id] == true
+	local track = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -11, 0.5, 0),
+		Size = UDim2.fromOffset(41, 22),
+		BackgroundColor3 = startOn and ACCENT or C.switchOff,
+		BorderSizePixel = 0,
+		Text = "",
+		AutoButtonColor = false,
+		ZIndex = 2,
+	}, row)
+	corner(track, 999)
+	stroke(track, C.white, 0.93, 1)
+	squishy(track, 1.08, 0.92, 0.94, 1.06)
+	-- faint accent glow while the toggle is enabled; fades out over the same time as the toggle moves
+	local glow = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(1, 12, 1, 12), BackgroundColor3 = ACCENT, BackgroundTransparency = startOn and 0.82 or 1, BorderSizePixel = 0, ZIndex = 1 }, track)
+	corner(glow, 999)
+	local function glowTo(isOn)
+		tween(glow, { BackgroundTransparency = isOn and 0.82 or 1, BackgroundColor3 = ACCENT }, 0.4, Enum.EasingStyle.Quad)
+	end
+	local on = startOn
+	local trail = new("Frame", { Position = UDim2.fromOffset(3, 4), Size = UDim2.fromOffset(14, 14), BackgroundColor3 = C.white, BackgroundTransparency = 0.7, BorderSizePixel = 0, ZIndex = 2 }, track)
+	corner(trail, 999)
+	local knob = new("Frame", { Position = UDim2.fromOffset(3, 3), Size = UDim2.fromOffset(16, 16), BackgroundColor3 = C.white, BorderSizePixel = 0, ZIndex = 3 }, track)
+	corner(knob, 999)
+	local kn = spring(on and 22 or 3, 380, 18)
+	local tr = spring(on and 22 or 3, 180, 16)
+	local pr = spring(0, 420, 20) -- :active knob width 16 -> 21 (and left 22 -> 17 when on)
+	killWith(kn, track)
+	killWith(tr, track)
+	killWith(pr, track)
+	-- index.html @keyframes knobSquish (0.55s), in order: 0% 1, 30% (1.55,.7), 60% (.75,1.2), 80% (1.08,.95), 100% 1
+	local KF = { { 0, 1, 1 }, { 0.165, 1.9, 0.55 }, { 0.33, 0.6, 1.4 }, { 0.44, 1.15, 0.9 }, { 0.55, 1, 1 } }
+	local sqT = nil
+	local function knobSquishScale()
+		if not sqT then
+			return 1, 1
+		end
+		local t = T - sqT
+		if t >= 0.55 then
+			sqT = nil
+			return 1, 1
+		end
+		for i = 1, #KF - 1 do
+			local k0, k1 = KF[i], KF[i + 1]
+			if t <= k1[1] then
+				local u = (t - k0[1]) / (k1[1] - k0[1])
+				return k0[2] + (k1[2] - k0[2]) * u, k0[3] + (k1[3] - k0[3]) * u
+			end
+		end
+		return 1, 1
+	end
+	track.MouseButton1Down:Connect(function()
+		setT(pr, 5)
+	end)
+	track.MouseButton1Up:Connect(function()
+		setT(pr, 0)
+	end)
+	tick(function()
+		if track.Parent == nil then
+			return false
+		end
+		local kx, ky = knobSquishScale()
+		local w = 16 + pr.x + math.min(math.abs(kn.v) * 0.015, 6)
+		local left = kn.x - ((on and pr.x) or 0)
+		-- positions are measured from the track's centre and scaled by the track's current squish,
+		-- so the knob stays centred in the track while the track stretches
+		local tkx = track.Size.X.Offset / 41
+		local tky = track.Size.Y.Offset / 22
+		knob.AnchorPoint = Vector2.new(0.5, 0.5)
+		knob.Position = UDim2.new(0.5, (left + w / 2 - 20.5) * tkx, 0.5, 0)
+		knob.Size = UDim2.fromOffset(w * kx * tkx, 16 * ky * tky)
+		trail.AnchorPoint = Vector2.new(0.5, 0.5)
+		trail.Position = UDim2.new(0.5, (tr.x + 7 - 20.5) * tkx, 0.5, 0)
+		trail.Size = UDim2.fromOffset(14 * tkx, 14 * tky)
+		return true
+	end)
+	local function paint()
+		tween(track, { BackgroundColor3 = on and ACCENT or C.switchOff }, 0.25)
+	end
+	themed(track, function()
+		if on then
+			track.BackgroundColor3 = ACCENT
+		end
+	end)
+	track.Activated:Connect(function()
+		on = not on
+		sqT = T -- knobSquish animation
+		popStretch(track) -- whole-track out-and-in, same as the dropdown click
+		glowTo(on)
+		setFlag(item.id, on)
+		setT(kn, on and 22 or 3)
+		setT(tr, on and 22 or 3)
+		paint()
+	end)
+	onFlag[item.id] = function(v)
+		v = v == true
+		if v ~= on then
+			on = v
+			setT(kn, on and 22 or 3)
+			setT(tr, on and 22 or 3)
+			paint()
+			glowTo(on)
+		end
+	end
+end
+
+local function ctrlSlider(row, item)
+	local wrap = new("Frame", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -14, 0.5, 0), Size = UDim2.fromOffset(176, 30), BackgroundTransparency = 1, ZIndex = 2 }, row)
+	local valLbl = label(wrap, "", 11, ACCENT2, F_BLACK, { Position = UDim2.new(1, -38, 0, 0), Size = UDim2.fromOffset(38, 30), TextXAlignment = Enum.TextXAlignment.Right, ZIndex = 3 })
+	local trackF = new("Frame", { Position = UDim2.new(0, 0, 0.5, -3), Size = UDim2.new(1, -48, 0, 6), BackgroundColor3 = C.switchOff, BorderSizePixel = 0, ZIndex = 2 }, wrap)
+	corner(trackF, 999)
+	local fill = new("Frame", { Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = ACCENT, BorderSizePixel = 0, ZIndex = 3 }, trackF)
+	corner(fill, 999)
+	themed(fill, function()
+		fill.BackgroundColor3 = ACCENT
+	end)
+	local thumb = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(15, 15), BackgroundColor3 = C.white, BorderSizePixel = 0, ZIndex = 4 }, trackF)
+	corner(thumb, 999)
+	local function frac(v)
+		return (v - item.min) / (item.max - item.min)
+	end
+	local function fmt(v)
+		return tostring(v) .. item.unit
+	end
+	local fs = spring(frac(Flags[item.id]), 300, 24)
+	killWith(fs, wrap)
+	valLbl.Text = fmt(Flags[item.id])
+	tick(function()
+		if wrap.Parent == nil then
+			return false
+		end
+		local c = math.clamp(fs.x, 0, 1)
+		fill.Size = UDim2.new(c, 0, 1, 0)
+		thumb.Position = UDim2.new(c, 0, 0.5, 0)
+		return true
+	end)
+	local hit = new("TextButton", { Position = UDim2.new(0, -8, 0.5, -11), Size = UDim2.new(1, 16, 0, 22), BackgroundTransparency = 1, Text = "", AutoButtonColor = false, ZIndex = 5 }, trackF)
+	-- slider thumb: hover scale(1.3,1.15), :active scale(1.45,.9)
+	squishy(hit, 1.3, 1.15, 1.45, 0.9, thumb)
+	local function setFromX(mx)
+		local rel = math.clamp((mx - trackF.AbsolutePosition.X) / trackF.AbsoluteSize.X, 0, 1)
+		local v = math.floor(item.min + (item.max - item.min) * rel + 0.5)
+		setFlag(item.id, v)
+		setT(fs, frac(v))
+		valLbl.Text = fmt(v)
+	end
+	hit.MouseButton1Down:Connect(function()
+		setFromX(UIS:GetMouseLocation().X)
+		activeDrag = function(m)
+			setFromX(m.X)
+		end
+	end)
+	onFlag[item.id] = function(v)
+		setT(fs, frac(v))
+		valLbl.Text = fmt(v)
+	end
+end
+
+local function widestOpt(opts)
+	local w = 0
+	for _, o in ipairs(opts) do
+		w = math.max(w, textW(o, 11.5, F_SEMI))
+	end
+	return w
+end
+
+local function ctrlSelect(row, item)
+	local btn = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -14, 0.5, 0),
+		Size = UDim2.fromOffset(math.max(120, widestOpt(item.opts) + 56), 28),
+		BackgroundColor3 = C.row,
+		BorderSizePixel = 0,
+		Text = "",
+		AutoButtonColor = false,
+		ZIndex = 2,
+	}, row)
+	corner(btn, 9)
+	stroke(btn, C.white, 0.94, 1)
+	local txt = label(btn, tostring(Flags[item.id]), 11.5, C.txt, F_SEMI, { Position = UDim2.fromOffset(11, 0), Size = UDim2.new(1, -34, 1, 0), ZIndex = 3 })
+	local arrow
+	if ASSETS.chrome.chevDown ~= "" then
+		arrow = new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(1, -18, 0.5, 0), Size = UDim2.fromOffset(11, 11), BackgroundTransparency = 1, Image = ASSETS.chrome.chevDown, ImageColor3 = C.mut, ZIndex = 3 }, btn)
+	else
+		arrow = label(btn, "⌄", 12, C.mut, F_BOLD, { Position = UDim2.new(1, -20, 0, 0), Size = UDim2.fromOffset(12, 28), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3 })
+	end
+	squishy(btn, 1.04, 0.95, 0.93, 1.05)
+	btn.Activated:Connect(function()
+		if popup and popup.btn == btn then
+			closePopup() -- already open on this button: close it
+			return
+		end
+		popStretch(btn)
+		openPopup(btn, item.opts, Flags[item.id], function(choice)
+			txt.Text = tostring(choice)
+			setFlag(item.id, choice)
+			popStretch(btn)
+		end, arrow)
+	end)
+	onFlag[item.id] = function(v)
+		txt.Text = tostring(v)
+	end
+end
+
+local function prettyKey(name)
+	if name == nil or name == "" then
+		return "Unbound"
+	end
+	return name
+end
+
+local function ctrlKey(row, item)
+	local btn = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -14, 0.5, 0),
+		Size = UDim2.fromOffset(96, 28),
+		BackgroundColor3 = C.row,
+		BorderSizePixel = 0,
+		Text = "",
+		AutoButtonColor = false,
+		ZIndex = 2,
+	}, row)
+	corner(btn, 9)
+	local bstroke = stroke(btn, C.white, 0.94, 1)
+	local txt = label(btn, prettyKey(Flags[item.id]), 11, C.txt, F_SEMI, { Size = UDim2.new(1, 0, 1, 0), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3 })
+	squishy(btn, 1.05, 0.94, 0.92, 1.06)
+	local pulsing = false
+	tick(function()
+		if btn.Parent == nil then
+			return false
+		end
+		if pulsing then
+			bstroke.Transparency = 0.3 + 0.3 * (1 - math.cos(2 * math.pi * T / 1.1)) / 2 -- keybtn.listen pulse
+		end
+		return true
+	end)
+	btn.Activated:Connect(function()
+		txt.Text = "Press a key…"
+		txt.TextColor3 = ACCENT2
+		bstroke.Color = ACCENT
+		pulsing = true
+		listening = function(input)
+			pulsing = false
+			if input.KeyCode == Enum.KeyCode.Escape then
+				setFlag(item.id, "Unbound")
+			else
+				setFlag(item.id, input.KeyCode.Name)
+			end
+			txt.Text = prettyKey(Flags[item.id])
+			txt.TextColor3 = C.txt
+			bstroke.Color = C.white
+			bstroke.Transparency = 0.94
+			popStretch(btn)
+		end
+	end)
+	onFlag[item.id] = function(v)
+		txt.Text = prettyKey(v)
+	end
+end
+
+local function ctrlColor(row, item)
+	local box = new("Frame", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -14, 0.5, 0), Size = UDim2.fromOffset(#item.opts * 26, 22), BackgroundTransparency = 1, ZIndex = 2 }, row)
+	new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		HorizontalAlignment = Enum.HorizontalAlignment.Right,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+		Padding = UDim.new(0, 7),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, box)
+	local rings = {}
+	for i, hex in ipairs(item.opts) do
+		local sw = new("TextButton", {
+			Size = UDim2.fromOffset(19, 19),
+			BackgroundColor3 = Color3.fromHex(hex),
+			BorderSizePixel = 0,
+			Text = "",
+			AutoButtonColor = false,
+			LayoutOrder = i,
+			ZIndex = 3,
+		}, box)
+		corner(sw, 999)
+		squishy(sw, 1.3, 0.9, 0.85, 1.15)
+		local ring = new("UIStroke", { Color = Color3.fromHex(hex), Thickness = 2, Transparency = (hex == Flags[item.id]) and 0 or 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, sw)
+		rings[#rings + 1] = { hex = hex, ring = ring }
+		sw.Activated:Connect(function()
+			setFlag(item.id, hex)
+			for _, r in ipairs(rings) do
+				r.ring.Transparency = (r.hex == hex) and 0 or 1
+			end
+		end)
+	end
+	onFlag[item.id] = function(v)
+		for _, r in ipairs(rings) do
+			r.ring.Transparency = (r.hex == v) and 0 or 1
+		end
+	end
+end
+
+local function ctrlButton(row, item)
+	local w = math.max(80, textW(item.label, 11.5, F_BOLD) + 32)
+	local b = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -14, 0.5, 0),
+		Size = UDim2.fromOffset(w, 28),
+		BackgroundColor3 = Color3.fromHex("#f472b6"),
+		BorderSizePixel = 0,
+		Text = item.label,
+		Font = F_BOLD,
+		TextSize = 11.5,
+		TextColor3 = C.white,
+		AutoButtonColor = false,
+		ZIndex = 2,
+	}, row)
+	corner(b, 9)
+	local grad = new("UIGradient", { Color = ColorSequence.new(Color3.fromHex("#f472b6"), Color3.fromHex("#ec4899")), Rotation = 45 }, b)
+	themed(b, function()
+		grad.Color = ColorSequence.new(Color3.fromHex("#f472b6"), Color3.fromHex("#ec4899"))
+	end)
+	squishy(b, 1.05, 0.94, 0.9, 0.9)
+	b.Activated:Connect(function()
+		b.Text = "✓ done"
+		popStretch(b)
+		task.delay(0.9, function()
+			if b.Parent then
+				b.Text = item.label
+			end
+		end)
+	end)
+end
+
+-- Unload: first click shows "Are you sure (3)" and counts down; a second click during the countdown unloads
+local function ctrlUnload(row, item)
+	local w = math.max(120, textW("Are you sure (3)", 11.5, F_BOLD) + 32)
+	local b = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -14, 0.5, 0),
+		Size = UDim2.fromOffset(w, 28),
+		BackgroundColor3 = Color3.fromHex("#f472b6"),
+		BorderSizePixel = 0,
+		Text = item.label,
+		Font = F_BOLD,
+		TextSize = 11.5,
+		TextColor3 = C.white,
+		AutoButtonColor = false,
+		ZIndex = 2,
+	}, row)
+	corner(b, 9)
+	local grad = new("UIGradient", { Color = ColorSequence.new(Color3.fromHex("#f472b6"), Color3.fromHex("#ec4899")), Rotation = 45 }, b)
+	themed(b, function()
+		grad.Color = ColorSequence.new(Color3.fromHex("#f472b6"), Color3.fromHex("#ec4899"))
+	end)
+	squishy(b, 1.05, 0.94, 0.9, 0.9)
+	local armed = false
+	b.Activated:Connect(function()
+		popStretch(b)
+		if armed then
+			if _G.NEKO_STOP then
+				_G.NEKO_STOP()
+			end
+			return
+		end
+		armed = true
+		b.Text = "Are you sure (3)"
+		task.spawn(function()
+			local count = 3
+			while count > 0 and armed do
+				task.wait(1)
+				if not armed then
+					break
+				end
+				count = count - 1
+				if b.Parent == nil then
+					return
+				end
+				b.Text = "Are you sure (" .. count .. ")"
+			end
+			if armed and b.Parent then
+				task.wait(0.4) -- show "(0)" briefly before resetting
+				if armed and b.Parent then
+					armed = false
+					b.Text = item.label
+				end
+			end
+		end)
+	end)
+end
+
+-- New config: a name box and a create button. Names must be unique.
+local function ctrlConfigCreate(row, item)
+	local box = new("TextBox", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -128, 0.5, 0),
+		Size = UDim2.fromOffset(140, 28),
+		BackgroundColor3 = C.switchOff,
+		BorderSizePixel = 0,
+		Text = "",
+		PlaceholderText = "Config name",
+		PlaceholderColor3 = C.mut,
+		TextColor3 = C.txt,
+		Font = F_MED,
+		TextSize = 11.5,
+		ClearTextOnFocus = false,
+		ZIndex = 2,
+	}, row)
+	corner(box, 9)
+	local b = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -14, 0.5, 0),
+		Size = UDim2.fromOffset(104, 28),
+		BackgroundColor3 = Color3.fromHex("#f472b6"),
+		BorderSizePixel = 0,
+		Text = "Create config",
+		Font = F_BOLD,
+		TextSize = 11.5,
+		TextColor3 = C.white,
+		AutoButtonColor = false,
+		ZIndex = 2,
+	}, row)
+	corner(b, 9)
+	local grad = new("UIGradient", { Color = ColorSequence.new(Color3.fromHex("#f472b6"), Color3.fromHex("#ec4899")), Rotation = 45 }, b)
+	squishy(b, 1.05, 0.94, 0.9, 0.9)
+	local function flash(text)
+		b.Text = text
+		task.delay(1.4, function()
+			if b.Parent then
+				b.Text = "Create config"
+			end
+		end)
+	end
+	b.Activated:Connect(function()
+		popStretch(b)
+		local name = box.Text:gsub("^%s+", ""):gsub("%s+$", "")
+		if name == "" then
+			flash("Enter a name")
+			return
+		end
+		if nameTaken(name) then
+			flash("Name taken")
+			return
+		end
+		configs[name] = copyFlags()
+		activeConfig = name
+		saveConfigs()
+		box.Text = ""
+		flash("Created ✓")
+	end)
+end
+
+-- a styled action button, same look as the other buttons
+local function styledButton(row, text, w)
+	local b = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -14, 0.5, 0),
+		Size = UDim2.fromOffset(w, 28),
+		BackgroundColor3 = Color3.fromHex("#f472b6"),
+		BorderSizePixel = 0,
+		Text = text,
+		Font = F_BOLD,
+		TextSize = 11.5,
+		TextColor3 = C.white,
+		AutoButtonColor = false,
+		ZIndex = 2,
+	}, row)
+	corner(b, 9)
+	new("UIGradient", { Color = ColorSequence.new(Color3.fromHex("#f472b6"), Color3.fromHex("#ec4899")), Rotation = 45 }, b)
+	squishy(b, 1.05, 0.94, 0.9, 0.9)
+	return b
+end
+
+local function flashText(b, text, back)
+	b.Text = text
+	task.delay(1.4, function()
+		if b.Parent then
+			b.Text = back
+		end
+	end)
+end
+
+local function sortedNames()
+	local t = {}
+	for k in pairs(configs) do
+		table.insert(t, k)
+	end
+	table.sort(t)
+	return t
+end
+
+-- Save Config: writes the current settings into the active config
+local function ctrlCfgSave(row, item)
+	local b = styledButton(row, "Save", 96)
+	b.Activated:Connect(function()
+		popStretch(b)
+		if saveActive() then
+			flashText(b, "Saved ✓", "Save")
+		else
+			flashText(b, "Create one first", "Save")
+		end
+	end)
+end
+
+-- Load Config: pick a saved config and apply it
+local function ctrlCfgLoad(row, item)
+	local b = styledButton(row, "Load", 96)
+	local arrow = new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(1, -14, 0.5, 0), Size = UDim2.fromOffset(1, 1), BackgroundTransparency = 1, ZIndex = 3 }, b)
+	b.Activated:Connect(function()
+		if popup and popup.btn == b then
+			closePopup()
+			return
+		end
+		popStretch(b)
+		local names = sortedNames()
+		if #names == 0 then
+			openPopup(b, { "No configs yet" }, "No configs yet", function() end, arrow)
+			return
+		end
+		openPopup(b, names, activeConfig, function(choice)
+			if applyConfig(choice) then
+				flashText(b, "Loaded ✓", "Load")
+			end
+		end, arrow)
+	end)
+end
+
+-- Auto Load Config: a dropdown of the saved configs (plus "None")
+local function ctrlConfigPick(row, item)
+	local function currentLabel()
+		if settings.autoload then
+			return settings.autoload
+		end
+		local any = next(configs) ~= nil
+		return any and "None" or "No configs yet"
+	end
+	local b = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -14, 0.5, 0),
+		Size = UDim2.fromOffset(150, 28),
+		BackgroundColor3 = C.switchOff,
+		BorderSizePixel = 0,
+		Text = "",
+		Font = F_MED,
+		TextSize = 11.5,
+		TextColor3 = C.txt,
+		AutoButtonColor = false,
+		ZIndex = 2,
+	}, row)
+	corner(b, 9)
+	-- nothing picked: the button says "None"
+	local function refreshLabel()
+		b.Text = settings.autoload or "None"
+	end
+	refreshLabel()
+	-- the dropdown arrow is the chevron image from the Roblox asset list
+	local arrow
+	if ASSETS.chrome.chevDown ~= "" then
+		arrow = new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(1, -18, 0.5, 0), Size = UDim2.fromOffset(11, 11), BackgroundTransparency = 1, Image = ASSETS.chrome.chevDown, ImageColor3 = C.mut, ZIndex = 3 }, b)
+	else
+		arrow = label(b, "⌄", 12, C.mut, F_BOLD, { Position = UDim2.new(1, -18, 0, 0), Size = UDim2.fromOffset(12, 28), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3 })
+	end
+	squishy(b, 1.04, 0.95, 0.93, 1.05)
+	b.Activated:Connect(function()
+		if popup and popup.btn == b then
+			closePopup()
+			return
+		end
+		popStretch(b)
+		local names = {}
+		for k in pairs(configs) do
+			table.insert(names, k)
+		end
+		table.sort(names)
+		if #names == 0 then
+			-- nothing saved yet: the menu says so instead of offering an empty choice
+			openPopup(b, { "No configs yet" }, "No configs yet", function() end, arrow)
+			return
+		end
+		local opts = { "None" }
+		for _, n in ipairs(names) do
+			table.insert(opts, n)
+		end
+		openPopup(b, opts, settings.autoload or "None", function(choice)
+			if choice == "None" then
+				settings.autoload = nil
+			else
+				settings.autoload = choice
+			end
+			refreshLabel()
+			saveConfigs()
+		end, arrow)
+	end)
+end
+
+CONTROLS = {
+	toggle = ctrlToggle,
+	slider = ctrlSlider,
+	select = ctrlSelect,
+	key = ctrlKey,
+	color = ctrlColor,
+	button = ctrlButton,
+	unload = ctrlUnload,
+	cfgcreate = ctrlConfigCreate,
+	cfgpick = ctrlConfigPick,
+	cfgsave = ctrlCfgSave,
+	cfgload = ctrlCfgLoad,
+}
+end
+
+local ROW_H = 48
+
+-- grey-to-white gradient outline for the pills around tab text (hidden until hovered)
+local function pillOutline(parent)
+	local st = new("UIStroke", { Color = Color3.new(1, 1, 1), Thickness = 1, Transparency = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, parent)
+	new("UIGradient", { Color = ColorSequence.new(Color3.fromHex("#6b6b78"), Color3.new(1, 1, 1)), Rotation = 90 }, st)
+	return st
+end
+
+-- label with two offset ghost copies, used to fake a blur on entry
+local function blurLabel(parent, text, size, color, font, props, ghosts)
+	local px, py = props.Position.X.Offset, props.Position.Y.Offset
+	for _, dx in ipairs({ -1.5, 1.5 }) do
+		local g = label(parent, text, size, color, font, { Position = UDim2.fromOffset(px + dx, py), Size = props.Size, TextXAlignment = props.TextXAlignment, ZIndex = 3 })
+		g.TextTransparency = 0.5
+		table.insert(ghosts, g)
+	end
+	return label(parent, text, size, color, font, props)
+end
+
+local function buildPage(tab)
+	local holder = new("CanvasGroup", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0, GroupTransparency = 1, ZIndex = 2 }, pageArea)
+	local scroll = new("ScrollingFrame", {
+		Position = UDim2.fromOffset(14, 2),
+		Size = UDim2.new(1, -28, 1, -18),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 4,
+		ScrollBarImageColor3 = C.scroll,
+		CanvasSize = UDim2.new(),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ZIndex = 2,
+	}, holder)
+	new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, scroll)
+	new("UIPadding", { PaddingBottom = UDim.new(0, 16) }, scroll)
+	local rowIx = 0
+	local groupsHere = {}
+	for gi, g in ipairs(tab.groups) do
+		if g.closed == nil then
+			g.closed = false
+		end
+		local group = new("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, LayoutOrder = gi, ZIndex = 2 }, scroll)
+		new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, group)
+		new("UIPadding", { PaddingBottom = UDim.new(0, 12) }, group)
+		local head = new("TextButton", { Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1, Text = "", AutoButtonColor = false, LayoutOrder = 1, ZIndex = 3 }, group)
+		local hlabel = label(head, g.title, 11.5, ACCENT2, F_BLACK, { Position = UDim2.fromOffset(4, 0), Size = UDim2.new(1, -30, 1, 0), ZIndex = 3 })
+		local chev
+		if ASSETS.chrome.chevUp ~= "" then
+			chev = new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(1, -10, 0.5, 0), Size = UDim2.fromOffset(12, 12), BackgroundTransparency = 1, Image = ASSETS.chrome.chevUp, ImageColor3 = C.mut, ZIndex = 3 }, head)
+		else
+			chev = label(head, "∧", 12, C.mut, F_BOLD, { Position = UDim2.new(1, -16, 0, 0), Size = UDim2.fromOffset(12, 28), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3 })
+		end
+		if g.closed then
+			chev.Rotation = 180
+		end
+		local hlSc = new("UIScale", {}, hlabel)
+		-- hover pill behind the title text: the squish needs a visible shape to show on
+		local hpill = new("Frame", { Position = UDim2.fromOffset(2, 2), Size = UDim2.fromOffset(textW(g.title, 11.5, F_BLACK) + 12, 24), BackgroundColor3 = Color3.fromHex("#2a2a33"), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 2 }, head)
+		corner(hpill, 999)
+		local hOutline = pillOutline(hpill)
+		head.MouseEnter:Connect(function()
+			tween(hOutline, { Transparency = 0.1 }, 0.2)
+			tween(hlabel, { TextColor3 = ACCENT, Position = UDim2.fromOffset(6, 0) }, 0.2) -- hover: darker pink
+			tween(hpill, { BackgroundTransparency = 0.3 }, 0.2)
+		end)
+		head.MouseLeave:Connect(function()
+			tween(hOutline, { Transparency = 1 }, 0.2)
+			tween(hlabel, { TextColor3 = ACCENT2, Position = UDim2.fromOffset(4, 0) }, 0.2)
+			tween(hpill, { BackgroundTransparency = 1 }, 0.2)
+		end)
+		squishy(head, 1.02, 0.94, 0.94, 1.05, hpill) -- hover/press squish on the title pill
+		local bodyF = new("Frame", { Size = UDim2.new(1, 0, 0, 0), BackgroundTransparency = 1, ClipsDescendants = false, LayoutOrder = 2, ZIndex = 2 }, group) -- rows pop out past the card
+		local card = new("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = C.panel, BorderSizePixel = 0, ZIndex = 2 }, bodyF)
+		corner(card, 13)
+		stroke(card, C.white, 0.94, 1)
+		new("UIPadding", { PaddingTop = UDim.new(0, 5), PaddingBottom = UDim.new(0, 5), PaddingLeft = UDim.new(0, 5), PaddingRight = UDim.new(0, 5) }, card)
+		new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, card)
+
+		local hs = spring(g.closed and 0 or 1, 280, 26) -- 0 closed, 1 open
+		local function bodyH()
+			return card.AbsoluteSize.Y
+		end
+		tick(function()
+			if group.Parent == nil then
+				return false
+			end
+			local h = bodyH()
+			bodyF.Size = UDim2.new(1, 0, 0, math.floor(h * math.clamp(hs.x, 0, 1) + 0.5))
+			return true
+		end)
+		head.Activated:Connect(function()
+			g.closed = not g.closed
+			setT(hs, g.closed and 0 or 1)
+			tween(chev, { Rotation = g.closed and 180 or 0 }, 0.5, Enum.EasingStyle.Back)
+		end)
+
+		for ii, item in ipairs(g.items) do
+			rowIx = rowIx + 1
+			local row = new("CanvasGroup", { Size = UDim2.new(1, 0, 0, ROW_H), BackgroundColor3 = C.row, BackgroundTransparency = 1, BorderSizePixel = 0, LayoutOrder = ii, GroupTransparency = 1, ZIndex = 3 }, card)
+			corner(row, 10)
+			toCenter(row)
+			local hv = spring(1, 420, 18)
+			local rh = new("TextButton", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "", AutoButtonColor = false, ZIndex = 1 }, row)
+			squishy(rh, 1.004, 0.996, 0.99, 1.01, row) -- .row:hover / .row:active
+			local ro = (item.title .. " " .. item.desc):lower()
+			local entry = { row = row, group = group, q = ro }
+			table.insert(rowsIndex, entry)
+			-- Roblox has no per-element blur, so the text gets two offset ghost copies that fade out on entry
+			local ghosts = {}
+			blurLabel(row, item.title, 12.5, C.txt, F_SEMI, { Position = UDim2.fromOffset(11, 9), Size = UDim2.new(1, -220, 0, 16), ZIndex = 4 }, ghosts)
+			blurLabel(row, item.desc, 11, C.mut, F_REG, { Position = UDim2.fromOffset(11, 26), Size = UDim2.new(1, -220, 0, 14), ZIndex = 4 }, ghosts)
+			row.MouseEnter:Connect(function()
+				tween(row, { BackgroundTransparency = 0 }, 0.18)
+			end)
+			row.MouseLeave:Connect(function()
+				tween(row, { BackgroundTransparency = 1 }, 0.18)
+			end)
+			local ctrl = CONTROLS[item.kind]
+			if ctrl then
+				ctrl(row, item)
+			end
+			-- rows bounce in with the stagger from the web build
+			local delay = math.min(70 + (rowIx - 1) * 30, 520) / 1000
+			-- index.html rowIn (.55s): 0% (.92,.96) -> 55% (1.02,.985) -> 75% (.995,1.008) -> 100% (1,1)
+			-- each row fades in while it grows far past its box, then shrinks back to normal size
+			-- its own tick drives the row's Size directly, so the squish system can't cancel it
+			local E_KF = { { 0, 0.55, 0.55 }, { 0.16, 1.3, 1.3 }, { 0.3, 0.9, 0.9 }, { 0.4, 1.04, 1.04 }, { 0.48, 1, 1 } }
+			local e0 = T + delay
+			local eSample = kfPlay(E_KF, e0)
+			FX[row].entering = true
+			tick(function()
+				if row.Parent == nil then
+					return false
+				end
+				if T < e0 then
+					return true
+				end
+				if T - e0 >= E_KF[#E_KF][1] then
+					FX[row].entering = false
+					row.Size = UDim2.new(1, 0, 0, ROW_H)
+					return false
+				end
+				local kx, ky = eSample()
+				row.Size = UDim2.new(kx, 0, 0, ROW_H * ky)
+				return true
+			end)
+			task.delay(delay, function()
+				if row.Parent == nil then
+					return
+				end
+				tween(row, { GroupTransparency = 0 }, 0.35)
+				-- the blur clears: ghost copies fade out while the row fades in
+				for _, g in ipairs(ghosts) do
+					tween(g, { TextTransparency = 1 }, 0.6)
+				end
+			end)
+		end
+		table.insert(groupsHere, group)
+		groupsIndex[#groupsIndex + 1] = group
+	end
+	local emptyText = ASSETS.chrome.star ~= "" and "nothing matches — try another word" or "nothing matches — try another word ✦"
+	local empty = label(holder, emptyText, 12, C.dim, F_REG, {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0.5, 0, 0.5, 0),
+		Size = UDim2.new(1, 0, 0, 30),
+		TextXAlignment = Enum.TextXAlignment.Center,
+		Visible = false,
+		ZIndex = 3,
+	})
+	emptyMsg = empty
+	if ASSETS.chrome.star ~= "" then
+		local tw = textW(emptyText, 12, F_REG)
+		new("ImageLabel", {
+			AnchorPoint = Vector2.new(0, 0.5),
+			Position = UDim2.new(0.5, math.floor(tw / 2) + 6, 0.5, 0),
+			Size = UDim2.fromOffset(12, 12),
+			BackgroundTransparency = 1,
+			Image = ASSETS.chrome.star,
+			ImageColor3 = C.dim,
+			ZIndex = 3,
+		}, empty)
+	end
+	-- page fade + rise, like pageIn
+	holder.Position = UDim2.fromOffset(0, 12)
+	tween(holder, { GroupTransparency = 0, Position = UDim2.fromOffset(0, 0) }, 0.45, Enum.EasingStyle.Quint)
+	return holder
+end
+
+local function applyFilter()
+	local q = searchIn.Text:gsub("^%s+", ""):gsub("%s+$", ""):lower()
+	local visible = 0
+	for _, e in ipairs(rowsIndex) do
+		if e.row.Parent then
+			local hit = (q == "") or (string.find(e.q, q, 1, true) ~= nil)
+			e.row.Visible = hit
+			if hit then
+				visible = visible + 1
+			end
+		end
+	end
+	for _, grp in ipairs(groupsIndex) do
+		if grp.Parent then
+			local n = 0
+			for _, child in ipairs(grp:GetDescendants()) do
+				if child:IsA("CanvasGroup") and child.Visible then
+					n = n + 1
+				end
+			end
+			grp.Visible = (q == "") or (n > 0)
+		end
+	end
+	if emptyMsg then
+		local showE = (q ~= "") and visible == 0
+		if showE and not emptyMsg.Visible then
+			emptyMsg.TextTransparency = 1
+			tween(emptyMsg, { TextTransparency = 0 }, 0.45)
+		end
+		emptyMsg.Visible = showE
+	end
+end
+searchIn:GetPropertyChangedSignal("Text"):Connect(applyFilter)
+
+local pageToken = 0
+local function showPage(sec, tab)
+	pageToken = pageToken + 1
+	local myToken = pageToken
+	local old = pageHolder
+	pageHolder = nil
+	closePopup()
+	listening = nil
+	local function build()
+		rowsIndex = {}
+		groupsIndex = {}
+		pageHolder = buildPage(tab)
+		applyFilter()
+	end
+	if old then
+		-- the old page fades out first; the new one is only built after it is gone, so the two never show together
+		tween(old, { GroupTransparency = 1 }, 0.1)
+		task.delay(0.12, function()
+			old:Destroy()
+			if myToken == pageToken then
+				build()
+			end
+		end)
+	else
+		build()
+	end
+end
+
+-- tabs ------------------------------------------------------------------
+pillTo = function(pos, inst)
+	if inst then
+		snap(tabPill.a, pos[1])
+		snap(tabPill.b, pos[2])
+	else
+		setT(tabPill.a, pos[1])
+		setT(tabPill.b, pos[2])
+		kickPill(tabPill)
+	end
+end
+
+local function buildTabs(sec, instant)
+	for _, b in ipairs(tabBtns) do
+		b:Destroy()
+	end
+	tabBtns = {}
+	if tabPill then
+		tabPill.frame:Destroy()
+	end
+	tabPill = makePill(tabsEl, true)
+	-- the selected tab keeps the grey-to-white outline on its pill
+	tabPillOutline = pillOutline(tabPill.frame)
+	tabPillOutline.Transparency = 0.2
+	local x = 0
+	local positions = {}
+	for ti, tab in ipairs(sec.tabs) do
+		local w = textW(tab.id, 12, F_SEMI) + 28
+		local b = new("TextButton", {
+			Position = UDim2.fromOffset(x, 0),
+			Size = UDim2.fromOffset(w, 28),
+			BackgroundColor3 = Color3.fromHex("#2a2a33"), -- hover pill: the squish needs a visible shape to show on
+			BackgroundTransparency = 1,
+			Text = tab.id,
+			Font = F_SEMI,
+			TextSize = 12,
+			TextColor3 = C.mut,
+			AutoButtonColor = false,
+			ZIndex = 3,
+		}, tabsEl)
+		positions[ti] = { x, x + w }
+		tabBtns[ti] = b
+		corner(b, 999)
+		b.MouseEnter:Connect(function()
+			if currentTab ~= tab then
+				tween(b, { TextColor3 = ACCENT, BackgroundTransparency = 0.3 }, 0.15) -- hover: darker pink text, pill appears
+			end
+		end)
+		b.MouseLeave:Connect(function()
+			if currentTab ~= tab then
+				tween(b, { TextColor3 = C.mut, BackgroundTransparency = 1 }, 0.15)
+			end
+		end)
+		b.Activated:Connect(function()
+			if currentTab == tab then
+				return
+			end
+			local prevIdx = table.find(sec.tabs, currentTab)
+			currentTab = tab
+			-- the hover pill must not stay behind on the tab we just left, or on the one we picked
+			if prevIdx and prevIdx ~= ti and tabBtns[prevIdx] then
+				tween(tabBtns[prevIdx], { BackgroundTransparency = 1 }, 0.15)
+			end
+			tween(b, { BackgroundTransparency = 1 }, 0.15)
+			pillTo(positions[ti])
+			for j, bb in ipairs(tabBtns) do
+				tween(bb, { TextColor3 = (j == ti) and ACCENT2 or C.mut }, 0.2)
+			end
+			showPage(sec, tab)
+		end)
+		local tsq = squishy(b, 1.04, 0.9, 0.86, 0.8) -- hover: stretched sideways and squashed down; press: bundled up
+		snap(tsq, 0.85)
+		task.delay((ti - 1) * 0.045, function()
+			if b.Parent then
+				setT(tsq, 1)
+			end
+		end)
+		x = x + w + 4
+	end
+	pillTo(positions[1], instant)
+	for j, bb in ipairs(tabBtns) do
+		bb.TextColor3 = (j == 1) and ACCENT2 or C.mut
+	end
+end
+
+selectSection = function(sec, instant)
+	local si = table.find(DATA, sec)
+	currentSec = sec
+	currentTab = sec.tabs[1]
+	setNavOn(si)
+	if instant then
+		snap(navPill.a, (si - 1) * NAV_STEP)
+		snap(navPill.b, (si - 1) * NAV_STEP + 36)
+	else
+		setT(navPill.a, (si - 1) * NAV_STEP)
+		setT(navPill.b, (si - 1) * NAV_STEP + 36)
+		kickPill(navPill)
+	end
+	buildTabs(sec, instant)
+	showPage(sec, currentTab)
+end
+
+-- =====================================================================
+-- show / hide / dock
+-- =====================================================================
+local dock = new("Frame", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -20), Size = UDim2.fromOffset(92, 42), BackgroundTransparency = 1, Visible = false, ZIndex = 20 }, screen)
+local dockBtn = new("TextButton", {
+	Size = UDim2.fromScale(1, 1),
+	BackgroundColor3 = Color3.fromHex("#1c1c23"),
+	BackgroundTransparency = 0.12,
+	BorderSizePixel = 0,
+	Text = "",
+	AutoButtonColor = false,
+	ZIndex = 20,
+}, dock)
+corner(dockBtn, 999)
+-- flower icon + "neko" label, same asset as the titlebar
+if ASSETS.flower ~= "" then
+	new("ImageLabel", { Position = UDim2.fromOffset(22, 13), Size = UDim2.fromOffset(16, 16), BackgroundTransparency = 1, Image = ASSETS.flower, ImageColor3 = ACCENT, ZIndex = 21 }, dockBtn)
+else
+	label(dockBtn, "✿", 13, ACCENT, F_BOLD, { Position = UDim2.fromOffset(20, 0), Size = UDim2.fromOffset(18, 42), ZIndex = 21 })
+end
+label(dockBtn, "neko", 12.5, ACCENT2, F_BLACK, { Position = UDim2.fromOffset(43, 0), Size = UDim2.new(1, -43, 1, 0), TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 21 })
+local dockStroke = stroke(dockBtn, ACCENT, 0.5, 1)
+themed(dockStroke, function()
+	dockStroke.Color = ACCENT
+end)
+local dockY = spring(34, 240, 9) -- bouncy entrance (springier than before)
+local dockUI = new("UIScale", {}, dock)
+local dockS = spring(1, 240, 10) -- dockIn: scale .4 -> 1, bouncy
+tick(function()
+	if dock.Parent == nil then
+		return false
+	end
+	local bob = 0
+	if dock.Visible then
+		-- fast float: 6px up and down, one cycle every 0.9s
+		bob = -6 * (1 - math.cos(2 * math.pi * T / 0.9)) / 2
+	end
+	dock.Position = UDim2.new(0.5, 0, 1, -20 + dockY.x + bob)
+	dockUI.Scale = math.max(dockS.x, 0)
+	return true
+end)
+dockBtn.Activated:Connect(function()
+	popStretch(dockBtn)
+	showWin()
+end)
+squishy(dockBtn, 1.08, 0.9, 0.92, 1.08)
+-- semi squish that pulses in time with the float: wider as it goes up, taller as it comes down
+FX[dockBtn].kf = function()
+	local w = math.sin(2 * math.pi * T / 0.9)
+	return 1 + 0.035 * w, 1 - 0.035 * w
+end
+
+hideWin = function(mode)
+	closingNow = true
+	sinkOff()
+	closePopup()
+	listening = nil
+	hidden = true
+	setT(rotX, mode == "closing" and -2 or 0)
+	if mode == "min" then
+		setT(sc, 0.06)
+		setT(offY, screen.AbsoluteSize.Y * 0.46)
+	else
+		setT(sc, 0.88)
+		setT(offY, 0)
+		setT(bounceY, 26) -- drop, then bounce around before it goes
+	end
+	task.delay(mode == "min" and 0.25 or 0.55, function()
+		if hidden then
+			win.Visible = false
+			dock.Visible = true
+			snap(dockY, 34)
+			setT(dockY, 0)
+			snap(dockS, 0.4)
+			setT(dockS, 1)
+		end
+	end)
+end
+
+do
+-- true while the pointer is over the menu, the dock button, or an open dropdown
+local function overUI()
+	local m = guiMouse()
+	if win.Visible and inside(win, m) then
+		return true
+	end
+	if dock.Visible and inside(dock, m) then
+		return true
+	end
+	if popup and inside(popup.frame, m) then
+		return true
+	end
+	return false
+end
+
+-- menu open: unlock the mouse and swallow clicks that land on the menu, so the game never sees them
+local mouseBefore = nil
+sinkOn = function()
+	if not mouseBefore then
+		mouseBefore = UIS.MouseBehavior
+	end
+	UIS.MouseBehavior = Enum.MouseBehavior.Default
+	UIS.MouseIconEnabled = true
+	CAS:BindActionAtPriority(SINK_NAME, function()
+		if overUI() then
+			return Enum.ContextActionResult.Sink
+		end
+		return Enum.ContextActionResult.Pass
+	end, false, Enum.ContextActionPriority.High.Value,
+		Enum.UserInputType.MouseButton1, Enum.UserInputType.MouseButton2, Enum.UserInputType.MouseButton3, Enum.UserInputType.Touch)
+end
+sinkOff = function()
+	CAS:UnbindAction(SINK_NAME)
+	if mouseBefore then
+		UIS.MouseBehavior = mouseBefore
+		mouseBefore = nil
+	end
+end
+
+end
+
+showWin = function()
+	sinkOn()
+	followUntil = T + 0.8
+	closingNow = false
+	hidden = false
+	dock.Visible = false
+	win.Visible = true
+	setT(rotX, 0)
+	snap(sc, 0.8) -- open like before: scale up from 80%, with the spring bouncing at the end
+	setT(sc, 1)
+	openKF = nil
+	snap(offY, 36)
+	setT(offY, 0)
+	snap(bounceY, 30) -- starts 30px low, bounces up and down
+	setT(bounceY, 0)
+	playLogoIntro()
+end
+
+-- =====================================================================
+-- settings hooks (same as special() in index.html)
+-- =====================================================================
+local function setAccent(name)
+	local pair = ACCENTS[name] or ACCENTS.Pink
+	ACCENT = Color3.fromHex(pair[1])
+	ACCENT2 = Color3.fromHex(pair[2])
+	for i = #themes, 1, -1 do
+		if themes[i]() == false then
+			table.remove(themes, i)
+		end
+	end
+	-- nav / tab / page text that is currently accent2 follows the new accent
+	for j, nb in ipairs(navBtns) do
+		if currentSec == DATA[j] then
+			nb.TextColor3 = ACCENT2
+		end
+	end
+	for j, bb in ipairs(tabBtns) do
+		if currentTab == currentSec.tabs[j] then
+			bb.TextColor3 = ACCENT2
+		end
+	end
+	if logo and wmFps then
+		wmFps.TextColor3 = ACCENT2
+	end
+end
+
+onFlag.m_accent = setAccent
+onFlag.m_blur = function(on)
+	blur.Enabled = on
+end
+onFlag.m_shadow = function(on)
+	setGlow(on)
+end
+onFlag.m_wm = function(on)
+	if on then
+		wm.Visible = true
+		wm.GroupTransparency = 1
+		wm.Position = UDim2.new(1, -16, 0, 4) -- .wm translateY(-10px) scale(.9)
+		tween(wm, { GroupTransparency = 0, Position = UDim2.new(1, -16, 0, 14) }, 0.4, Enum.EasingStyle.Back)
+	else
+		tween(wm, { GroupTransparency = 1 }, 0.2)
+		task.delay(0.2, function()
+			if not Flags.m_wm then
+				wm.Visible = false
+			end
+		end)
+	end
+end
+onFlag.cl_scale = function(v)
+	local map = { ["90%"] = 0.9, ["100%"] = 1, ["110%"] = 1.1, ["125%"] = 1.25 }
+	uiScaleSetting = map[v] or 1
+end
+
+-- fps + ping (same numbers as the web build)
+local frames, fpsT = 0, 0
+tick(function(dt)
+	frames = frames + 1
+	fpsT = fpsT + dt
+	if fpsT >= 0.5 then
+		wmFps.Text = tostring(math.floor(frames / fpsT + 0.5))
+		frames, fpsT = 0, 0
+	end
+	return true
+end)
+task.spawn(function()
+	while true do
+		wmPing.Text = tostring(8 + math.random(0, 13))
+		task.wait(2)
+	end
+end)
+
+-- window drag release + popup close on outside click
+UIS.InputBegan:Connect(function(input, gp)
+	if input.UserInputType == Enum.UserInputType.Keyboard then
+		if listening then
+			local f = listening
+			listening = nil
+			f(input)
+			return
+		end
+		if UIS:GetFocusedTextBox() then
+			return
+		end
+		local k = input.KeyCode.Name
+		if k == Flags.cl_key then
+			if hidden then
+				showWin()
+			else
+				hideWin("min")
+			end
+			return
+		end
+		if Flags.m_panic ~= "Unbound" and k == Flags.m_panic then
+			hideWin("closing")
+			return
+		end
+	end
+	if input.UserInputType == Enum.UserInputType.MouseButton1 and popup then
+		local m = guiMouse()
+		if not inside(popup.frame, m) and not inside(popup.btn, m) then
+			closePopup()
+		end
+	end
+end)
+
+UIS.InputChanged:Connect(function(input)
+	if activeDrag and input.UserInputType == Enum.UserInputType.MouseMovement then
+		activeDrag(UIS:GetMouseLocation())
+	end
+end)
+
+UIS.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		if activeDrag then
+			activeDrag = nil
+		end
+		if dragging then
+			dragging = false
+			setT(sc, 1)
+			kick(sc, -2.4) -- release wobble
+		end
+	end
+end)
+
+screen:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+	closePopup()
+	if maxed then
+		local vp = screen.AbsoluteSize
+		win.Size = UDim2.fromOffset(vp.X - 24, vp.Y - 24)
+		setT(px, 12)
+		setT(py, 12)
+	end
+	clampTarget()
+end)
+
+-- =====================================================================
+-- boot
+-- =====================================================================
+-- auto load on teleport: the script queues a copy of itself so it runs again in the next game.
+-- Set NEKO_SOURCE_URL to a raw link to this script (for example a raw paste or gist link).
+local NEKO_SOURCE_URL = ""
+local function queueSelf()
+	if NEKO_SOURCE_URL == "" then
+		return
+	end
+	local queue = queue_on_teleport or (syn and syn.queue_on_teleport)
+	if queue and settings.cl_autoload_on == true and settings.autoload then
+		queue('loadstring(game:HttpGet("' .. NEKO_SOURCE_URL .. '"))()')
+	end
+end
+queueSelf()
+selectSection(DATA[1], true)
+centerWindow()
+snap(px, px.t)
+snap(py, py.t)
+if Flags.cl_silent and Flags.cl_autoload_on and settings.autoload and configs[settings.autoload] then
+	-- silent load: the config is applied, the menu stays hidden, the dock button shows
+	win.Visible = false
+	dock.Visible = true
+	snap(dockY, 0)
+	snap(dockS, 1)
+else
+	showWin()
+end
