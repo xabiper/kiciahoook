@@ -8,7 +8,8 @@
 	blur, accent recolor, RightShift menu key, panic key.
 
 	Paste decal IDs into ASSETS. Empty slots are drawn natively.
-	Cosmetic only: nothing here touches gameplay.
+	Mobile: a square toggle button at the top of the screen. Mobile is detected from touch input,
+	or forced by typing /mobile in chat. On mobile the bottom dock and the keyboard hint are hidden.
 ]]
 
 local Players = game:GetService("Players")
@@ -19,15 +20,15 @@ local CAS = game:GetService("ContextActionService")
 local SINK_NAME = "NekoSink"
 -- mouse position in the same space as AbsolutePosition (the screen ignores the top bar inset)
 local function guiMouse()
-	local m = UIS:GetMouseLocation()
-	local inset = GuiService:GetGuiInset()
-	return Vector2.new(m.X, m.Y - inset.Y)
+	-- screen has IgnoreGuiInset = true, so this matches AbsolutePosition with no inset offset
+	return UIS:GetMouseLocation()
 end
 local TweenService = game:GetService("TweenService")
 local TextService = game:GetService("TextService")
 local Lighting = game:GetService("Lighting")
 
 local player = Players.LocalPlayer
+local isMobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
 local playerGui = player:WaitForChild("PlayerGui")
 
 -- executor: re-running replaces the previous instance instead of stacking
@@ -58,6 +59,21 @@ end
 -- Letter PNGs are 4x of the CSS size; their Roblox size is the css values below.
 -- =====================================================================
 local ASSETS = {
+	-- text images: upload text/<Name>.png as Decals and paste the rbxassetid here. "" = native text
+	text = {
+		Main = { "rbxassetid://111897665348649", 28.75, 9.75 },
+		Silent = { "", 35.0, 9.75 },
+		Triggerbot = { "", 65.5, 12.0 },
+		Players = { "", 43.5, 11.5 },
+		World = { "", 36.5, 9.25 },
+		Crosshair = { "rbxassetid://88650612032021", 56.75, 9.75 },
+		Movement = { "", 65.5, 8.75 },
+		Character = { "rbxassetid://93169775245231", 59.5, 9.25 },
+		Configs = { "rbxassetid://109821337912483", 46.0, 12.0 },
+		Settings = { "", 50.75, 12.0 },
+		Universal = { "", 55.5, 9.75 },
+		Modules = { "", 51.5, 9.25 },
+	},
 	logoMark = "rbxassetid://140218288383071", -- full logo (logo_full_reference), drawn as one piece
 	flower = "rbxassetid://77960160652015", -- titlebar icon
 	logoFlower = "",
@@ -192,6 +208,12 @@ local function label(parent, text, size, color, font, props)
 end
 
 local function tween(obj, goal, dur, style, delayT)
+	if _G.NEKO_ANIM_OFF then
+		for k, v in pairs(goal) do
+			obj[k] = v
+		end
+		return { Play = function() end, Cancel = function() end }
+	end
 	local info = TweenInfo.new(dur, style or Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 0, false, delayT or 0)
 	local tw = TweenService:Create(obj, info, goal)
 	tw:Play()
@@ -220,10 +242,14 @@ local function wake(s)
 	end
 end
 local function setT(s, t)
+	if _G.NEKO_ANIM_OFF then s.x = t; s.v = 0; s.t = t; return end
 	s.t = t
 	wake(s)
 end
 local function kick(s, dv)
+	if _G.NEKO_ANIM_OFF then
+		return
+	end
 	s.v = s.v + dv
 	wake(s)
 end
@@ -304,6 +330,9 @@ local SQUISH_GAIN = 1.6
 -- index.html @keyframes played from a start time: returns a function giving (scaleX, scaleY)
 local function kfPlay(KF, t0)
 	return function()
+		if _G.NEKO_ANIM_OFF then
+			return KF[#KF][2], KF[#KF][3]
+		end
 		local t = T - t0
 		if t < 0 then
 			return KF[1][2], KF[1][3]
@@ -324,7 +353,7 @@ end
 
 -- CSS-style squish: hover -> scale(hovX, hovY), press -> scale(pressX, pressY).
 -- Uses Size, so X and Y stretch independently (like the html transform: scale(x, y)).
-local function squishy(btn, hovX, hovY, pressX, pressY, target, noCenter)
+local function squishy(btn, hovX, hovY, pressX, pressY, target, noCenter, txt)
 	target = target or btn
 	if not noCenter then
 		toCenter(target)
@@ -341,6 +370,15 @@ local function squishy(btn, hovX, hovY, pressX, pressY, target, noCenter)
 	local sx = spring(1, 420, 13) -- lower damping = more bounce
 	local sy = spring(1, 420, 13)
 	local fx = { px = spring(1, 300, 16), py = spring(1, 300, 16) }
+	-- optional text squish: a UIScale on the text holder, uniform (text can't stretch on one axis)
+	local txtSc, ts, txtHov, txtPress
+	if txt then
+		local txtObj = txt.obj or btn
+		txtSc = new("UIScale", {}, txtObj)
+		ts = spring(1, 420, 13)
+		killWith(ts, txtObj)
+		txtHov, txtPress = txt.hov or 0.9, txt.press or 0.82
+	end
 	FX[target] = fx
 	killWith(sx, target)
 	killWith(sy, target)
@@ -348,6 +386,9 @@ local function squishy(btn, hovX, hovY, pressX, pressY, target, noCenter)
 	killWith(fx.py, target)
 	local hovering, pressing = false, false
 	local function aim()
+		if ts then
+			setT(ts, pressing and txtPress or (hovering and txtHov or 1))
+		end
 		if pressing then
 			setT(sx, pressX)
 			setT(sy, pressY)
@@ -363,6 +404,9 @@ local function squishy(btn, hovX, hovY, pressX, pressY, target, noCenter)
 	tick(function()
 		if target.Parent == nil then
 			return false
+		end
+		if txtSc then
+			txtSc.Scale = ts.x
 		end
 		if fx.entering then
 			return true -- the row entrance owns Size until it finishes
@@ -413,7 +457,7 @@ local CLICK_KF = {
 }
 local function popStretch(obj)
 	local fx = FX[obj]
-	if not fx then
+	if not fx or _G.NEKO_ANIM_OFF then
 		return
 	end
 	fx.kf = kfPlay(CLICK_KF, T)
@@ -424,6 +468,9 @@ end
 -- =====================================================================
 local Flags = {}
 local onFlag = {}
+if getgenv then getgenv().Flags = Flags; getgenv().NekoOnFlag = onFlag end
+-- script-level hooks live here so the menu controls (which rebuild per page) can't overwrite them
+onFlag.__pin = {}
 
 -- configs: name -> snapshot of Flags. Names are unique (case-insensitive).
 local HttpService = game:GetService("HttpService")
@@ -476,6 +523,9 @@ local function setFlag(id, value)
 	Flags[id] = value
 	if onFlag[id] then
 		onFlag[id](value)
+	end
+	if onFlag.__pin[id] then
+		onFlag.__pin[id](value)
 	end
 	-- the active config saves every change made after it was created
 	if activeConfig and not loadingConfig then
@@ -547,122 +597,473 @@ end
 local function Ul(id, title, desc, label_)
 	return { kind = "unload", id = id, title = title, desc = desc, label = label_ }
 end
+local function Bn(id, title, desc, label_)
+	return { kind = "button", id = id, title = title, desc = desc, label = label_ or title }
+end
+local function Tx(id, title, desc, def, placeholder)
+	return { kind = "text", id = id, title = title, desc = desc, def = def or "", placeholder = placeholder or "Type here..." }
+end
 
 local DATA = {
-	{ id = "aiming", label = "Aiming", icon = "aim", tabs = {
-		{ id = "Main", groups = { { title = "Main", items = {
-			Tg("enabled", "Enabled", "Masterswitch for the aimbot"),
-			Sel("targeting", "Targeting Mode", "How the aimbot selects targets", { "Default", "Closest", "Lowest HP", "Random" }, "Default"),
-			Ky("aimkey", "Aimbot Key", "Activates the aimbot"),
-			Sel("keymode", "Key Mode", "How the aimbot key behaves", { "Hold", "Toggle" }, "Hold"),
-			Tg("sticky", "Sticky", "Locks onto the current target until it dies"),
-			Sel("aimmode", "Aim Mode", "How the aimbot moves your aim", { "Camera", "Mouse" }, "Camera"),
-			Tg("nosleep", "No Sleep", "Keeps the aimbot awake between kills"),
-			Rg("fov", "FOV", "Field of view used for target selection", 0, 180, 90, "°"),
-			Rg("smooth", "Smoothing", "How fluid the aim movement feels", 1, 20, 7),
-		} } } },
-		{ id = "Silent", groups = { { title = "Silent", items = {
-			Tg("s_enabled", "Enabled", "Masterswitch for silent aim"),
-			Rg("s_chance", "Hit Chance", "Probability of applying silent aim", 0, 100, 85, "%"),
-			Sel("s_pred", "Prediction", "Leads moving targets", { "Off", "Low", "Medium", "High" }, "Medium"),
-			Tg("s_wall", "Wall Check", "Skips targets behind walls", true),
-			Tg("s_team", "Ignore Teammates", "Never silent-aim at your team", true),
-		} } } },
-		{ id = "Triggerbot", groups = { { title = "Triggerbot", items = {
-			Tg("t_enabled", "Enabled", "Masterswitch for the triggerbot"),
-			Rg("t_delay", "Delay", "Milliseconds to wait before firing", 0, 300, 40, "ms"),
-			Sel("t_hitbox", "Hitbox", "Preferred hitbox to fire at", { "Head", "Torso", "Closest" }, "Head"),
-			Tg("t_vis", "Only Visible", "Fire only at targets you can see", true),
-		} } } },
+	-- FULL UE layout: main, world, esp, visuals, character, misc, settings
+	{ id = "main", label = "Main", icon = "aim", tabs = {
+		{ id = "Silent Aim", groups = {
+			{ title = "Silent Aim", items = {
+				Tg("silent_toggle", "Enabled", "Masterswitch for silent aim"),
+				Ky("silent_keybind", "Keybind", "Activates silent aim"),
+				Sel("silent_mode", "Key Mode", "How the key behaves", { "Hold", "Toggle", "Always" }, "Hold"),
+				Sel("silent_closest_part", "Target Part", "Preferred hit part", { "Head", "UpperTorso", "HumanoidRootPart", "Closest" }, "Head"),
+				Rg("silent_radius", "FOV Radius", "Silent FOV", 10, 500, 120, "px"),
+				Rg("silent_hitchance", "Hit Chance", "Probability of applying silent", 1, 100, 100, "%"),
+				Tg("silent_showfov", "Show FOV", "Draws the silent FOV"),
+				Tg("silent_fov_fill", "FOV Fill", "Fills the FOV"),
+				Tg("silent_fov_outline", "FOV Outline", "Outlines the FOV", true),
+				Tg("silent_fov_moving", "FOV Moving", "FOV follows movement"),
+				Tg("silent_fov_lerp", "FOV Lerp", "Smooth FOV transitions"),
+				Tg("silent_fov_rotation", "FOV Rotation", "Spins the FOV"),
+				Rg("silent_fov_rotation_speed", "Rotation Speed", "FOV spin speed", 10, 360, 90, "°/s"),
+				Tg("silent_manipulation", "Manipulation", "Advanced hit manipulation"),
+				Tg("silent_outline", "Outline", "Silent target outline"),
+				Cl("silent_color1", "Color 1", "Silent accent color", { "#ec4899", "#22d3ee", "#a3e635", "#facc15", "#ffffff", "#f43f5e" }, "#ec4899"),
+				Cl("silent_color2", "Color 2", "Silent secondary color", { "#ec4899", "#22d3ee", "#a3e635", "#facc15", "#ffffff", "#000000" }, "#ffffff"),
+				Cl("silent_fill_color1", "Fill Color", "FOV fill color", { "#ec4899", "#22d3ee", "#a3e635", "#ffffff" }, "#ec4899"),
+				Cl("silent_outline_color1", "Outline Color", "FOV outline color", { "#ec4899", "#22d3ee", "#ffffff", "#000000" }, "#ffffff"),
+				Tg("silent_team", "Team Check", "Ignores teammates", true),
+				Tg("silent_vis", "Visibility Check", "Skips targets behind walls", true),
+			} },
+		} },
+		{ id = "Aimbot", groups = {
+			{ title = "Aimbot", items = {
+				Tg("aimbot_toggle", "Enabled", "Masterswitch for aimbot"),
+				Ky("aimbot_keybind", "Keybind", "Activates the aimbot"),
+				Sel("aimbot_mode", "Key Mode", "How the key behaves", { "Hold", "Toggle", "Always" }, "Hold"),
+				Sel("aimbot_closest_part", "Target Part", "Preferred hit part", { "Head", "UpperTorso", "HumanoidRootPart", "Closest" }, "Head"),
+				Rg("aimbot_radius", "FOV Radius", "Field of view for target selection", 10, 500, 120, "px"),
+				Rg("aimbot_smoothing", "Smoothing", "How fluid the aim movement feels", 1, 50, 5),
+				Tg("aimbot_showfov", "Show FOV", "Draws the FOV circle"),
+				Tg("aimbot_fov_fill", "FOV Fill", "Fills the FOV circle"),
+				Tg("aimbot_fov_outline", "FOV Outline", "Outlines the FOV circle", true),
+				Tg("aimbot_fov_moving", "FOV Moving", "FOV follows movement"),
+				Tg("aimbot_fov_lerp", "FOV Lerp", "Smooth FOV transitions"),
+				Tg("aimbot_fov_rotation", "FOV Rotation", "Spins the FOV circle"),
+				Rg("aimbot_fov_rotation_speed", "Rotation Speed", "FOV spin speed", 10, 360, 90, "°/s"),
+				Tg("aimbot_match_axis", "Match Axis", "Locks X/Y independently"),
+				Tg("aimbot_outline", "Outline", "Target outline"),
+				Cl("aimbot_color1", "Color 1", "Aimbot accent", { "#ec4899", "#22d3ee", "#a3e635", "#facc15", "#ffffff", "#f43f5e" }, "#ec4899"),
+				Cl("aimbot_color2", "Color 2", "Aimbot secondary", { "#ec4899", "#22d3ee", "#ffffff", "#000000" }, "#ffffff"),
+				Cl("aimbot_fill_color1", "Fill Color", "FOV fill color", { "#ec4899", "#22d3ee", "#a3e635", "#ffffff" }, "#ec4899"),
+				Cl("aimbot_outline_color1", "Outline Color", "FOV outline color", { "#ec4899", "#22d3ee", "#ffffff", "#000000" }, "#ffffff"),
+				Tg("aimbot_team", "Team Check", "Ignores teammates", true),
+				Tg("aimbot_vis", "Visibility Check", "Skips targets behind walls", true),
+			} },
+			{ title = "Smoothing Delay", items = {
+				Rg("aimbot_delay_smooth_x", "Smooth X", "Horizontal smoothing delay", 0, 20, 0),
+				Rg("aimbot_delay_smooth_y", "Smooth Y", "Vertical smoothing delay", 0, 20, 0),
+				Rg("aimbot_delay_smooth_jump", "Jump Smooth", "Extra smooth while jumping", 0, 20, 0),
+				Tg("aimbot_delay_position", "Delay Position", "Predicts movement lag"),
+			} },
+		} },
+		{ id = "Triggerbot", groups = {
+			{ title = "Triggerbot", items = {
+				Tg("triggerbot_enabled", "Enabled", "Masterswitch for triggerbot"),
+				Ky("triggerbot_keybind", "Keybind", "Activates triggerbot"),
+				Rg("triggerbot_reaction_time", "Reaction Time", "Delay before firing", 0, 500, 50, "ms"),
+				Rg("triggerbot_reaction_time_offset", "Reaction Offset", "Random reaction offset", 0, 200, 0, "ms"),
+				Rg("triggerbot_shoot_delay", "Shoot Delay", "Cooldown between shots", 0, 500, 0, "ms"),
+				Rg("triggerbot_max_distance", "Max Distance", "Max range to fire", 50, 2000, 800),
+				Rg("triggerbot_forget_time", "Forget Time", "How long to remember targets", 0, 10, 2, "s"),
+				Tg("triggerbot_scoped", "Only Scoped", "Only fire while ADS"),
+				Tg("triggerbot_part_blacklist", "Part Blacklist", "Skip blacklisted parts"),
+				Tg("triggerbot_team", "Team Check", "Ignores teammates", true),
+			} },
+		} },
+		{ id = "Ragebot", groups = {
+			{ title = "Ragebot", items = {
+				Tg("ragebot_enabled", "Enabled", "Masterswitch for ragebot"),
+				Ky("ragebot_keybind", "Keybind", "Activates ragebot"),
+				Sel("ragebot_mode", "Mode", "Ragebot behavior", { "Normal", "Aggressive", "Bait" }, "Normal"),
+				Rg("ragebot_shoot_attempts", "Shoot Attempts", "Shots per target", 1, 10, 1),
+				Tg("ragebot_bait", "Bait", "Bait mode"),
+				Tg("ragebot_void_spam", "Void Spam", "Void spam attack"),
+				Tg("ragebot_void_spam_attack", "Void Spam Attack", "Attack while void spam"),
+				Tg("ragebot_void_spam_hide", "Void Spam Hide", "Hide during void spam"),
+				Tg("ragebot_priority", "Priority Targets", "Prioritize marked players"),
+				Tg("ragebot_priority_notification", "Priority Notify", "Notify on priority target"),
+				Tg("ragebot_weapon", "Weapon Filter", "Only rage with selected weapons"),
+			} },
+			{ title = "Anti Aim", items = {
+				Tg("anti_aim_enabled", "Enabled", "Anti-aim masterswitch"),
+				Sel("anti_aim_pitch", "Pitch", "Pitch mode", { "None", "Down", "Up", "Custom" }, "None"),
+				Sel("anti_aim_yaw", "Yaw", "Yaw mode", { "None", "Spin", "Jitter", "Custom" }, "None"),
+				Rg("anti_aim_custom_pitch", "Custom Pitch", "Custom pitch value", -90, 90, 0, "°"),
+				Rg("anti_aim_custom_yaw", "Custom Yaw", "Custom yaw value", -180, 180, 0, "°"),
+				Tg("anti_aim_floor_hide", "Floor Hide", "Hides under floor"),
+				Ky("anti_aim_floor_hide_keybind", "Floor Hide Key", "Toggle floor hide"),
+			} },
+		} },
+	} },
+	{ id = "world", label = "World", icon = "games", tabs = {
+		{ id = "Lighting", groups = {
+			{ title = "Atmosphere", items = {
+				Tg("atmosphere_enabled", "Enabled", "Custom atmosphere"),
+				Cl("atmosphere_color", "Color", "Atmosphere color", { "#87ceeb", "#ec4899", "#22d3ee", "#a3e635", "#facc15", "#ffffff" }, "#87ceeb"),
+				Rg("atmosphere_density", "Density", "Atmosphere density", 0, 1, 0.3),
+				Rg("atmosphere_offset", "Offset", "Atmosphere offset", 0, 1, 0),
+				Rg("atmosphere_glare", "Glare", "Atmosphere glare", 0, 1, 0),
+				Rg("atmosphere_haze", "Haze", "Atmosphere haze", 0, 1, 0),
+				Rg("atmosphere_decay", "Decay", "Atmosphere decay", 0, 1, 0.5),
+			} },
+			{ title = "Bloom", items = {
+				Tg("bloom_enabled", "Enabled", "Bloom effect"),
+				Rg("bloom_intensity", "Intensity", "Bloom strength", 0, 10, 1),
+				Rg("bloom_size", "Size", "Bloom size", 0, 100, 24),
+				Rg("bloom_threshold", "Threshold", "Bloom threshold", 0, 10, 2),
+			} },
+			{ title = "Color Correction", items = {
+				Tg("color_correction_enabled", "Enabled", "CC masterswitch"),
+				Rg("color_correction_brightness", "Brightness", "CC brightness", -1, 1, 0),
+				Rg("color_correction_contrast", "Contrast", "CC contrast", -1, 1, 0),
+				Rg("color_correction_saturation", "Saturation", "CC saturation", -1, 1, 0),
+				Cl("color_correction_tint", "Tint", "CC tint color", { "#ffffff", "#ec4899", "#22d3ee", "#a3e635", "#facc15" }, "#ffffff"),
+			} },
+			{ title = "Ambience", items = {
+				Tg("ambience_enabled", "Enabled", "Custom ambience sound"),
+				Sel("ambience_value", "Preset", "Ambience preset", { "None", "Rain", "Wind", "City", "Custom" }, "None"),
+				Rg("ambience_volume", "Volume", "Ambience volume", 0, 10, 5),
+			} },
+		} },
+		{ id = "Weather", groups = {
+			{ title = "Weather", items = {
+				Tg("weather_enabled", "Enabled", "Custom weather particles"),
+				Sel("weather_value", "Type", "Weather type", { "None", "Rain", "Snow", "Fog", "Sand" }, "None"),
+				Cl("weather_color_1", "Color 1", "Particle color 1", { "#ffffff", "#87ceeb", "#a3e635", "#ec4899" }, "#ffffff"),
+				Cl("weather_color_2", "Color 2", "Particle color 2", { "#ffffff", "#87ceeb", "#a3e635", "#ec4899" }, "#87ceeb"),
+				Rg("weather_rate_multiplier", "Rate", "Particle rate multiplier", 0.1, 5, 1),
+				Rg("weather_lifetime_multiplier", "Lifetime", "Particle lifetime multiplier", 0.1, 5, 1),
+				Rg("weather_timescale_multiplier", "Timescale", "Particle timescale", 0.1, 5, 1),
+			} },
+		} },
+	} },
+	{ id = "esp", label = "ESP", icon = "vis", tabs = {
+		{ id = "ESP", groups = {
+			{ title = "Boxes", items = {
+				Tg("esp_box", "Enabled", "Draws boxes around players", true),
+				Sel("esp_bounds_type", "Style", "Box drawing style", { "Full", "Corner", "Bounds" }, "Full"),
+				Rg("esp_bounds_width_scale", "Width Scale", "Box width scale", 0.5, 2, 1),
+				Tg("esp_box_moving", "Moving", "Animate box movement"),
+				Tg("esp_box_rotation", "Rotation", "Rotate boxes"),
+				Rg("esp_box_rotation_speed", "Rotation Speed", "Box spin speed", 10, 360, 90, "°/s"),
+				Cl("esp_box_color1", "Color 1", "Box color", { "#ec4899", "#f43f5e", "#22d3ee", "#a3e635", "#facc15", "#ffffff" }, "#ec4899"),
+				Cl("esp_box_color2", "Color 2", "Box secondary", { "#ec4899", "#22d3ee", "#ffffff", "#000000" }, "#ffffff"),
+			} },
+			{ title = "Chams", items = {
+				Tg("esp_chams", "Enabled", "Fills player models"),
+				Cl("esp_chams_color", "Fill Color", "Chams fill", { "#ec4899", "#22d3ee", "#a3e635", "#facc15", "#ffffff" }, "#ec4899"),
+				Cl("esp_chams_color2", "Outline Color", "Chams outline", { "#000000", "#ffffff", "#ec4899" }, "#000000"),
+				Rg("esp_chams_alpha_fill", "Fill Alpha", "Fill transparency", 0, 100, 40, "%"),
+				Rg("esp_chams_alpha_outline", "Outline Alpha", "Outline transparency", 0, 100, 80, "%"),
+			} },
+			{ title = "Skeleton", items = {
+				Tg("esp_skeleton", "Enabled", "Draws bone lines"),
+				Rg("esp_skeleton_thickness", "Thickness", "Bone line thickness", 1, 6, 1),
+				Tg("esp_skeleton_outline", "Outline", "Skeleton outline"),
+				Cl("esp_skeleton_color1", "Color", "Skeleton color", { "#ec4899", "#22d3ee", "#a3e635", "#ffffff" }, "#ec4899"),
+			} },
+			{ title = "Info", items = {
+				Tg("esp_name", "Names", "Shows player names", true),
+				Sel("esp_name_type", "Name Type", "What name to show", { "Display", "Username", "Both" }, "Display"),
+				Cl("esp_name_color1", "Name Color", "Name text color", { "#ffffff", "#ec4899", "#22d3ee", "#a3e635" }, "#ffffff"),
+				Tg("esp_healthbar", "Health Bar", "Health bars", true),
+				Sel("esp_healthbar_type", "Bar Type", "Health bar style", { "Bar", "Text", "Both" }, "Bar"),
+				Tg("esp_healthbar_health_lerp", "Health Lerp", "Smooth health transitions", true),
+				Tg("esp_healthbar_moving", "Bar Moving", "Animate health bar"),
+				Tg("esp_healthbar_resize", "Bar Resize", "Resize with health"),
+				Cl("esp_healthbar_color_start", "Health High", "Full health color", { "#22c55e", "#a3e635", "#ffffff" }, "#22c55e"),
+				Cl("esp_healthbar_color_middle", "Health Mid", "Mid health color", { "#facc15", "#f59e0b" }, "#facc15"),
+				Cl("esp_healthbar_color_end", "Health Low", "Low health color", { "#ef4444", "#f43f5e" }, "#ef4444"),
+				Tg("esp_distance", "Distance", "Shows distance"),
+				Cl("esp_distance_color1", "Distance Color", "Distance text color", { "#ffffff", "#8b8b96", "#ec4899" }, "#8b8b96"),
+				Tg("esp_weapon", "Weapon", "Shows held weapon"),
+				Cl("esp_weapon_color1", "Weapon Color", "Weapon text color", { "#ffffff", "#ec4899", "#22d3ee" }, "#ffffff"),
+				Tg("esp_show_team", "Show Team", "Show teammates", false),
+				Rg("esp_max_distance", "Max Distance", "Cull beyond this range", 50, 2000, 1000),
+				Sel("esp_font", "Font", "ESP text font", { "Gotham", "GothamBold", "Code", "SciFi" }, "GothamBold"),
+			} },
+			{ title = "Fill / Effects", items = {
+				Tg("esp_fill", "Fill", "Filled box overlay"),
+				Cl("esp_fill_color1", "Fill Color", "Fill color", { "#ec4899", "#22d3ee", "#a3e635", "#ffffff" }, "#ec4899"),
+				Tg("esp_fill_moving", "Fill Moving", "Animate fill"),
+				Tg("esp_fill_rotation", "Fill Rotation", "Rotate fill"),
+				Rg("esp_fill_rotation_speed", "Fill Rot Speed", "Fill spin speed", 10, 360, 90, "°/s"),
+				Tg("esp_effects_aura", "Aura", "Player aura effect"),
+				Cl("esp_effects_aura_color1", "Aura Color", "Aura color", { "#ec4899", "#22d3ee", "#a3e635" }, "#ec4899"),
+				Tg("esp_effects_particle", "Particles", "Player particles"),
+				Cl("esp_effects_particle_color1", "Particle Color", "Particle color", { "#ec4899", "#22d3ee", "#ffffff" }, "#ec4899"),
+			} },
+			{ title = "Body Override", items = {
+				Tg("esp_override_appearance", "Override Appearance", "Force body look"),
+				Cl("esp_body_color", "Body Color", "Forced body color", { "#ec4899", "#22d3ee", "#a3e635", "#ffffff" }, "#ec4899"),
+				Rg("esp_body_transparency", "Body Transparency", "Body transparency", 0, 100, 0, "%"),
+				Tg("esp_body_disables", "Disable Body Parts", "Hide certain body parts"),
+				Sel("esp_material", "Material", "Forced material", { "Default", "Neon", "ForceField", "Glass", "Metal" }, "Default"),
+			} },
+		} },
+		{ id = "World ESP", groups = {
+			{ title = "World Objects", items = {
+				Tg("esp_world_name", "Object Names", "Names on world objects"),
+				Tg("esp_world_distance", "Object Distance", "Distance to objects"),
+				Tg("esp_world_image", "Object Icons", "Icons on objects"),
+				Tg("esp_world_fade", "Fade", "Fade by distance"),
+				Sel("esp_world_fade_mode", "Fade Mode", "How fade works", { "Linear", "Smooth", "None" }, "Smooth"),
+				Rg("esp_world_lerp_speed", "Lerp Speed", "World ESP lerp", 1, 30, 10),
+				Rg("esp_world_object_scale", "Icon Scale", "World icon scale", 0.5, 3, 1),
+				Cl("esp_world_name_color", "Name Color", "World name color", { "#ffffff", "#ec4899", "#22d3ee" }, "#ffffff"),
+				Cl("esp_world_distance_color", "Distance Color", "World distance color", { "#8b8b96", "#ffffff", "#ec4899" }, "#8b8b96"),
+				Tg("esp_world_whitelist", "Whitelist Only", "Only show whitelisted objects"),
+			} },
+		} },
+		{ id = "Target", groups = {
+			{ title = "Targeting", items = {
+				Tg("target_highlight", "Highlight", "Highlights current target"),
+				Sel("target_highlight_type", "Highlight Type", "Highlight style", { "Fill", "Outline", "Both" }, "Both"),
+				Cl("target_highlight_fill", "Fill Color", "Highlight fill", { "#ec4899", "#22d3ee", "#facc15" }, "#ec4899"),
+				Cl("target_highlight_outline", "Outline Color", "Highlight outline", { "#ffffff", "#000000", "#ec4899" }, "#ffffff"),
+				Tg("target_tracer", "Target Tracer", "Tracer to locked target"),
+				Tg("target_hit_notify", "Hit Notify", "Shows hit notifications"),
+				Rg("target_hit_notify_duration", "Notify Duration", "How long notifies stay", 0.5, 5, 2, "s"),
+				Sel("target_hit_notify_text", "Notify Text", "Hit notify message", { "Hit", "Damaged", "Custom" }, "Hit"),
+				Tg("target_ui_enabled", "Target UI", "On-screen target panel"),
+				Tg("target_ui_show_targets", "Show Target List", "List of current targets"),
+				Rg("target_ui_scale", "UI Scale", "Target UI scale", 0.5, 2, 1),
+				Tg("targeting_limitdistance", "Limit Distance", "Only target within max range"),
+				Rg("targeting_maxdistance", "Max Distance", "Max targeting range", 50, 2000, 800),
+				Tg("targeting_visibleonly", "Visible Only", "Only target visible players", true),
+				Tg("targeting_ignore_protected", "Ignore Protected", "Skip protected players"),
+				Rg("targeting_forgettime", "Forget Time", "Forget target after seconds", 0, 10, 3, "s"),
+				Tg("targeting_disableflash", "Disable Flash", "No flash on target switch"),
+			} },
+			{ title = "Indicators", items = {
+				Tg("indicator_ammo", "Ammo Indicator", "Shows ammo status"),
+				Sel("indicator_ammo_style", "Ammo Style", "Indicator style", { "Text", "Bar", "Circle" }, "Text"),
+				Cl("indicator_ammo_color", "Ammo Color", "Ammo indicator color", { "#ffffff", "#ec4899", "#22d3ee", "#a3e635" }, "#ffffff"),
+				Cl("indicator_ammo_max_color", "Max Ammo Color", "Full ammo color", { "#22c55e", "#a3e635" }, "#22c55e"),
+				Cl("indicator_empty_color", "Empty Color", "Empty ammo color", { "#ef4444", "#f43f5e" }, "#ef4444"),
+				Tg("indicator_ragebot", "Ragebot Indicator", "Shows ragebot status"),
+				Sel("indicator_ragebot_style", "Rage Style", "Rage indicator style", { "Text", "Icon", "Both" }, "Text"),
+				Cl("indicator_ragebot_status_color", "Rage Status Color", "Rage status color", { "#ec4899", "#f43f5e", "#22d3ee" }, "#ec4899"),
+				Tg("indicator_manipulated", "Manipulated Indicator", "Shows when manipulated"),
+				Cl("indicator_manipulated_color", "Manip Color", "Manipulated color", { "#facc15", "#ec4899" }, "#facc15"),
+				Rg("indicator_offset_x", "Offset X", "Indicator X offset", -200, 200, 0),
+				Rg("indicator_offset_y", "Offset Y", "Indicator Y offset", -200, 200, 0),
+				Tg("indicator_lerp", "Lerp", "Smooth indicator movement", true),
+				Sel("indicator_font", "Font", "Indicator font", { "Gotham", "GothamBold", "Code" }, "GothamBold"),
+			} },
+		} },
 	} },
 	{ id = "visuals", label = "Visuals", icon = "vis", tabs = {
-		{ id = "Players", groups = { { title = "Players", items = {
-			Tg("v_enabled", "Enabled", "Masterswitch for player visuals"),
-			Tg("v_boxes", "Boxes", "Draws a box around players", true),
-			Sel("v_boxstyle", "Box Style", "How the boxes are drawn", { "Full", "Corners", "Filled" }, "Full"),
-			Tg("v_names", "Names", "Shows player names above boxes", true),
-			Tg("v_health", "Health Bar", "Renders a health bar next to boxes", true),
-			Tg("v_dist", "Distance", "Shows the distance in studs"),
-			Rg("v_max", "Max Distance", "Culls visuals beyond this range", 50, 2000, 800),
-			Cl("v_color", "Accent Color", "Color of the box outline", { "#ec4899", "#f43f5e", "#22d3ee", "#a3e635", "#facc15" }, "#ec4899"),
-		} } } },
-		{ id = "World", groups = { { title = "World", items = {
-			Tg("w_full", "Fullbright", "Removes darkness from the map"),
-			Tg("w_fog", "No Fog", "Strips fog from the world", true),
-			Sel("w_time", "Time of Day", "Forces a lighting mood", { "Default", "Dawn", "Noon", "Dusk", "Midnight" }, "Default"),
-			Tg("w_tex", "Remove Textures", "Flattens surfaces for clarity"),
-		} } } },
-		{ id = "Crosshair", groups = { { title = "Crosshair", items = {
-			Tg("c_enabled", "Enabled", "Draws a custom crosshair", true),
-			Sel("c_style", "Style", "Shape of the crosshair", { "Dot", "Cross", "Circle", "T" }, "Cross"),
-			Rg("c_size", "Size", "Overall crosshair size", 2, 40, 12),
-			Rg("c_thick", "Thickness", "Stroke width of the crosshair", 1, 8, 2),
-			Cl("c_color", "Color", "Crosshair color", { "#ffffff", "#ec4899", "#22d3ee", "#a3e635", "#facc15" }, "#ffffff"),
-		} } } },
-	} },
-	{ id = "misc", label = "Miscellaneous", icon = "misc", tabs = {
-		{ id = "Movement", groups = { { title = "Movement", items = {
-			Rg("g_speed", "Walk Speed", "Overrides your walk speed", 16, 200, 16),
-			Rg("g_jump", "Jump Power", "Overrides your jump power", 50, 300, 50),
-			Tg("g_inf", "Infinite Jump", "Jump again mid-air"),
-			Tg("g_fly", "Fly", "Ascend beyond the map"),
-			Tg("g_noclip", "Noclip", "Walk straight through walls"),
-		} } } },
-		{ id = "Character", groups = { { title = "Character", items = {
-			Tg("m_afk", "Anti AFK", "Keeps you connected while idle", true),
-			Ky("m_panic", "Panic Key", "Instantly hides everything"),
-			Tg("ch_nofall", "No Fall Damage", "Legs of steel, basically"),
-			Tg("ch_antirag", "Anti Ragdoll", "Stay on your feet"),
-		} } } },
-	} },
-	{ id = "cloud", label = "Cloud", icon = "cloud", tabs = {
-		{ id = "Configs", groups = { { title = "Configs", items = {
-			Tg("cl_sync", "Auto Sync", "Pushes changes as you make them", true),
-			Cs("cl_save", "Save Config", "Writes your current settings into the active config"),
-			Cq("cl_load", "Load Config", "Picks a saved config and applies it now"),
+		{ id = "Crosshair", groups = {
+			{ title = "Crosshair", items = {
+				Tg("crosshair_enabled", "Enabled", "Custom crosshair", true),
+				Tg("crosshair_disable_game", "Disable Game Crosshair", "Hides default crosshair"),
+				Rg("crosshair_length", "Length", "Line length", 2, 40, 12, "px"),
+				Rg("crosshair_thickness", "Thickness", "Stroke width", 1, 8, 2, "px"),
+				Rg("crosshair_offset", "Gap", "Center gap", 0, 20, 4, "px"),
+				Tg("crosshair_outline", "Outline", "Outline around crosshair"),
+				Cl("crosshair_outline_color_1", "Outline Color", "Outline color", { "#000000", "#ffffff", "#ec4899" }, "#000000"),
+				Tg("crosshair_rotation", "Rotation", "Spin the crosshair"),
+				Rg("crosshair_rotation_speed", "Rotation Speed", "Spin speed", 10, 360, 90, "°/s"),
+				Tg("crosshair_bounce", "Bounce", "Bounce animation"),
+				Rg("crosshair_bounce_speed", "Bounce Speed", "Bounce rate", 1, 20, 5),
+				Tg("crosshair_lerp", "Lerp", "Smooth crosshair movement", true),
+				Cl("crosshair_color_1", "Color 1", "Primary color", { "#ffffff", "#ec4899", "#22d3ee", "#a3e635", "#facc15" }, "#ffffff"),
+				Cl("crosshair_color_2", "Color 2", "Secondary color", { "#ffffff", "#ec4899", "#22d3ee", "#a3e635" }, "#ec4899"),
+			} },
 		} },
+		{ id = "Camera", groups = {
+			{ title = "Camera", items = {
+				Tg("camera_fov_changer", "Custom FOV", "Override camera FOV"),
+				Rg("camera_fov_changer_amount", "FOV Value", "Camera field of view", 30, 120, 70, "°"),
+				Tg("camera_aspect_ratio", "Aspect Ratio", "Force aspect ratio"),
+				Rg("camera_aspect_ratio_x", "Aspect X", "Width ratio", 1, 32, 16),
+				Rg("camera_aspect_ratio_y", "Aspect Y", "Height ratio", 1, 32, 9),
+				Tg("camera_anti_flashbang", "Anti Flashbang", "Reduces flash effect"),
+				Tg("camera_blur", "No Blur", "Removes camera blur"),
+				Tg("third_person_enabled", "Third Person", "Third person camera"),
+				Ky("third_person_keybind", "Third Person Key", "Toggle third person"),
+			} },
+		} },
+		{ id = "Hit Effects", groups = {
+			{ title = "Hit Effects", items = {
+				Tg("hit_effects_enabled", "Enabled", "Hit effect particles"),
+				Sel("hit_effects_selected", "Effect", "Hit effect type", { "Default", "Spark", "Blood", "Custom" }, "Default"),
+				Sel("hit_effects_material", "Material", "Effect material", { "Neon", "ForceField", "Glass", "Default" }, "Neon"),
+				Cl("hit_effects_col_1", "Color 1", "Effect color 1", { "#ec4899", "#f43f5e", "#ffffff", "#facc15" }, "#ec4899"),
+				Cl("hit_effects_col_2", "Color 2", "Effect color 2", { "#ffffff", "#ec4899", "#22d3ee" }, "#ffffff"),
+				Tg("hit_effects_weld", "Weld", "Weld effect to target"),
+				Tg("hit_effects_disable_marker", "No Hitmarker", "Hides default hitmarker"),
+				Tg("hit_effects_disable_numbers", "No Damage Numbers", "Hides damage numbers"),
+			} },
+			{ title = "Hit Sounds", items = {
+				Tg("hit_sounds_enabled", "Enabled", "Play sound on hit", true),
+				Sel("hit_sounds_selected", "Sound", "Hit sound pack", { "Default", "TF2", "CSGO", "Minecraft", "Osu", "Ding", "Custom" }, "Default"),
+				Rg("hit_sounds_volume", "Volume", "Hit sound volume", 0, 10, 5),
+				Tg("hit_sounds_disable", "Disable Game Sounds", "Mute default hit sounds"),
+			} },
+			{ title = "Tracers", items = {
+				Tg("custom_tracer_enabled", "Custom Tracers", "Bullet tracers"),
+				Sel("custom_tracer_selected", "Style", "Tracer style", { "Line", "Beam", "Particle" }, "Line"),
+				Rg("custom_tracer_length", "Length", "Tracer length", 1, 100, 20),
+				Rg("custom_tracer_width", "Width", "Tracer width", 0.1, 5, 1),
+				Rg("custom_tracer_lifetime", "Lifetime", "Tracer lifetime", 0.1, 5, 1, "s"),
+				Rg("custom_tracer_speed", "Speed", "Tracer speed", 1, 50, 10),
+				Tg("custom_tracer_glow", "Glow", "Glowing tracers"),
+				Tg("custom_tracer_outline", "Outline", "Tracer outline"),
+				Tg("custom_tracer_fade", "Fade", "Fade out tracers", true),
+				Cl("custom_tracer_color", "Color", "Tracer color", { "#ec4899", "#22d3ee", "#a3e635", "#ffffff", "#facc15" }, "#ec4899"),
+				Cl("custom_tracer_color2", "Color 2", "Tracer secondary", { "#ffffff", "#ec4899", "#22d3ee" }, "#ffffff"),
+				Rg("custom_tracer_emission", "Emission", "Tracer emission", 0, 10, 1),
+			} },
+		} },
+	} },
+	{ id = "character", label = "Character", icon = "misc", tabs = {
+		{ id = "Movement", groups = {
+			{ title = "Movement", items = {
+				Tg("movement_fly", "Fly", "Fly through the map"),
+				Ky("movement_flykeybind", "Fly Key", "Toggle fly"),
+				Rg("movement_flyvalue", "Fly Speed", "Fly speed", 25, 500, 100),
+				Tg("movement_noclip", "Noclip", "Walk through walls"),
+				Ky("movement_noclipkeybind", "Noclip Key", "Toggle noclip"),
+				Tg("movement_infinite_double_jump", "Infinite Jump", "Jump mid-air forever"),
+				Rg("movement_double_jump_height", "Double Jump Height", "Extra jump height", 1, 20, 5),
+				Rg("movement_double_jump_height_multiplier", "Jump Multiplier", "Jump height multiplier", 0.5, 5, 1),
+				Tg("movement_slideboost", "Slide Boost", "Boost on slides"),
+				Rg("movement_slideboostvalue", "Slide Boost Value", "Boost multiplier", 1, 10, 2),
+				Tg("movement_velocity", "Velocity", "Custom velocity"),
+				Ky("movement_velocitykeybind", "Velocity Key", "Toggle velocity"),
+				Tg("movement_maul_slam", "Maul Slam", "Maul slam ability"),
+				Rg("movement_maul_slam_multiplier", "Slam Multiplier", "Slam force multiplier", 1, 10, 2),
+			} },
+		} },
+		{ id = "Viewmodel", groups = {
+			{ title = "Viewmodel", items = {
+				Tg("viewmodel_chams", "Viewmodel Chams", "Colors your arms/gun"),
+				Cl("viewmodel_chams_color", "Chams Color", "Viewmodel fill", { "#ec4899", "#22d3ee", "#a3e635", "#ffffff" }, "#ec4899"),
+				Cl("viewmodel_chams_color2", "Chams Outline", "Viewmodel outline", { "#000000", "#ffffff", "#ec4899" }, "#000000"),
+				Rg("viewmodel_chams_alpha_fill", "Fill Alpha", "Fill transparency", 0, 100, 50, "%"),
+				Rg("viewmodel_chams_alpha_outline", "Outline Alpha", "Outline transparency", 0, 100, 80, "%"),
+				Tg("viewmodel_disable_textures", "No Textures", "Removes gun textures"),
+				Tg("viewmodel_wireframe", "Wireframe", "Wireframe viewmodel"),
+				Tg("viewmodel_override_appearance", "Override Appearance", "Force viewmodel look"),
+				Cl("viewmodel_body_color", "Body Color", "Viewmodel body color", { "#ec4899", "#22d3ee", "#ffffff" }, "#ec4899"),
+				Rg("viewmodel_body_transparency", "Body Transparency", "Viewmodel transparency", 0, 100, 0, "%"),
+				Sel("viewmodel_material", "Material", "Viewmodel material", { "Default", "Neon", "ForceField", "Glass", "Metal" }, "Default"),
+				Tg("viewmodel_offset", "Offset", "Custom viewmodel offset"),
+				Rg("viewmodel_offset_x", "Offset X", "X offset", -5, 5, 0),
+				Rg("viewmodel_offset_y", "Offset Y", "Y offset", -5, 5, 0),
+				Rg("viewmodel_offset_z", "Offset Z", "Z offset", -5, 5, 0),
+				Tg("viewmodel_frames_override", "Frames Override", "Override viewmodel frames"),
+				Rg("viewmodel_frames_value", "Frames Value", "Frame override value", 1, 120, 60),
+				Tg("viewmodel_recoil", "No Recoil VM", "Remove viewmodel recoil"),
+			} },
+			{ title = "Arms", items = {
+				Tg("arm_override_appearance", "Override Arms", "Force arm appearance"),
+				Cl("arm_body_color", "Arm Color", "Arm color", { "#ec4899", "#22d3ee", "#ffffff", "#facc15" }, "#ec4899"),
+				Rg("arm_body_transparency", "Arm Transparency", "Arm transparency", 0, 100, 0, "%"),
+				Tg("arm_disable_textures", "No Arm Textures", "Remove arm textures"),
+				Sel("arm_material", "Arm Material", "Arm material", { "Default", "Neon", "ForceField", "Glass" }, "Default"),
+			} },
+		} },
+		{ id = "Animation", groups = {
+			{ title = "Animation Player", items = {
+				Tg("animation_player_enabled", "Enabled", "Play custom animations"),
+				Ky("animation_player_keybind", "Keybind", "Play animation key"),
+				Sel("animation_player_value", "Animation", "Animation preset", { "None", "Cat Girl Bounce", "Wave", "Dance", "Custom" }, "None"),
+				Rg("animation_player_speed", "Speed", "Animation speed", 0.1, 5, 1),
+				Rg("animation_player_start_position", "Start", "Start position", 0, 1, 0),
+				Rg("animation_player_end_position", "End", "End position", 0, 1, 1),
+			} },
+		} },
+	} },
+	{ id = "misc", label = "Misc", icon = "misc", tabs = {
+		{ id = "Chat Spam", groups = {
+			{ title = "Chat Spam", items = {
+				Tg("chat_spam_enabled", "Enabled", "Spam chat messages"),
+				Sel("chat_spam_mode", "Mode", "Random / Order / Custom", { "Random", "Order", "Custom" }, "Random"),
+				Sel("chat_spam_order", "Order", "When mode is Order", { "Forward", "Reverse", "Shuffle" }, "Forward"),
+				Tx("chat_spam_text", "Messages", "Lines separated by |", "ez|get good|L", "msg1|msg2"),
+				Tx("chat_spam_input", "Custom line", "Extra line", "", "type here..."),
+			} },
+		} },
+		{ id = "Automation", groups = {
+			{ title = "Auto Select", items = {
+				Tg("auto_select_enabled", "Enabled", "Auto-pick loadout on spawn"),
+				Sel("auto_select_Primary", "Primary", "Weapon to auto-equip as primary", { "Assault Rifle", "Bow", "Crossbow", "Daggers", "Electricity", "Flashbang", "Grenade", "Katana", "Molotov", "Riot Shield", "Satchel", "Smoke Grenade", "Sniper", "Subspace Tripmine", "Sword", "None" }, "Assault Rifle"),
+				Sel("auto_select_Secondary", "Secondary", "Weapon to auto-equip as secondary", { "Assault Rifle", "Bow", "Crossbow", "Daggers", "Electricity", "Flashbang", "Grenade", "Katana", "Molotov", "Riot Shield", "Satchel", "Smoke Grenade", "Sniper", "Subspace Tripmine", "Sword", "None" }, "Daggers"),
+				Sel("auto_select_Melee", "Melee", "Weapon to auto-equip as melee", { "Assault Rifle", "Bow", "Crossbow", "Daggers", "Electricity", "Flashbang", "Grenade", "Katana", "Molotov", "Riot Shield", "Satchel", "Smoke Grenade", "Sniper", "Subspace Tripmine", "Sword", "None" }, "Katana"),
+				Sel("auto_select_Utility", "Utility", "Weapon to auto-equip as utility", { "Assault Rifle", "Bow", "Crossbow", "Daggers", "Electricity", "Flashbang", "Grenade", "Katana", "Molotov", "Riot Shield", "Satchel", "Smoke Grenade", "Sniper", "Subspace Tripmine", "Sword", "None" }, "Flashbang"),
+				Tg("arcade_auto_respawn", "Auto Respawn", "Respawn automatically"),
+				Tg("arcade_auto_ammo", "Auto Ammo", "Refill ammo"),
+			} },
+			{ title = "Auto Queue", items = {
+				Tg("auto_queue_enabled", "Enabled", "Requeue after match"),
+				Sel("auto_queue_mode", "Queue Mode", "Which mode to queue", { "1v1", "2v2", "3v3", "4v4", "5v5", "ranked 1v1", "ranked 2v2", "ranked 3v3" }, "1v1"),
+			} },
+			{ title = "Autoban", items = {
+				Sel("autoban_first", "First Ban", "Weapon/option banned first", { "Assault Rifle", "Bow", "Crossbow", "Daggers", "Electricity", "Flashbang", "Grenade", "Katana", "Molotov", "Riot Shield", "Satchel", "Smoke Grenade", "Sniper", "Subspace Tripmine", "Sword", "None" }, "Katana"),
+				Rg("autoban_first_delay", "First Delay", "Delay before first ban", 0, 60, 5, "s"),
+				Sel("autoban_second", "Second Ban", "Weapon/option banned second", { "Assault Rifle", "Bow", "Crossbow", "Daggers", "Electricity", "Flashbang", "Grenade", "Katana", "Molotov", "Riot Shield", "Satchel", "Smoke Grenade", "Sniper", "Subspace Tripmine", "Sword", "None" }, "Sword"),
+				Rg("autoban_second_delay", "Second Delay", "Delay before second ban", 0, 60, 10, "s"),
+				Tg("autoban_maps", "Ban Map", "Enable map ban"),
+				Sel("autoban_map_choice", "Map", "Map to ban / prefer", { "Random", "Arena", "Backrooms", "Battleground", "Bridge", "Chess", "Construction", "Crossroads", "Dimension", "Docks", "Graveyard", "Iceberg", "Onyx", "Playground", "Splash", "Station", "Shooting Range", "Village", "Big Arena", "Big Backrooms", "Big Crossroads", "Big Graveyard", "Big Onyx", "Big Splash", "Big Station", "Factory", "Gate", "Boss Arena", "Obby", "Spleef" }, "Random"),
+				Rg("autoban_map_delay", "Map Delay", "Map ban delay", 0, 60, 5, "s"),
+				Tg("autoban_weapons", "Ban Weapons Filter", "Only run autoban with selected weapons"),
+			} },
+		} },
+	} },
+	{ id = "settings", label = "Settings", icon = "cloud", tabs = {
+		{ id = "Configs", groups = {
+			{ title = "Configs", items = {
+				Tg("cl_sync", "Auto Sync", "Pushes changes as you make them", true),
+				Cs("cl_save", "Save Config", "Writes your current settings into the active config"),
+				Cq("cl_load", "Load Config", "Picks a saved config and applies it now"),
+			} },
 			{ title = "New Config", items = {
 				Cf("cl_new", "Create Config", "Name it, then your changes save to it"),
 			} },
 			{ title = "Auto Load", items = {
 				Cp("cl_autopick", "Auto Load Config", "The config that loads when Neko starts"),
+				Tg("cl_autoload_on", "Enable Auto Load", "Load the chosen config on start"),
+				Tg("cl_silent", "Silent Load", "Start with menu hidden"),
+				Tg("auto_load_enabled", "UE Auto Load", "UE-style auto load flag"),
+				Tg("auto_load_silent", "UE Silent Load", "UE-style silent load flag"),
 			} },
 		} },
-		{ id = "Settings", groups = {
-			{ title = "Settings", items = {
+		{ id = "Menu", groups = {
+			{ title = "Menu", items = {
 				Ky("cl_key", "Menu Key", "Toggles the menu visibility", "RightShift"),
-				Sel("m_accent", "Theme Accent", "Recolors the whole menu live", { "Pink", "Purple", "Blue", "Green" }, "Pink"),
-				Tg("m_blur", "Blur Background", "Frosts the world behind the menu"),
-				Tg("m_shadow", "Window Glow", "Pink aura around the window", true),
-				Tg("m_wm", "Watermark", "Shows an fps + ping tag in the corner"),
-				Sel("cl_scale", "UI Scale", "Size of the interface", { "90%", "100%", "110%", "125%" }, "100%"),
-				Tg("cl_anim", "Animations", "Bouncy springs everywhere", true),
+				Ky("m_panic", "Panic Key", "Instantly hides everything"),
+				Sel("m_accent", "Theme Accent", "Accent color of the menu", { "Pink", "Purple", "Blue", "Green" }, "Pink"),
+				Tg("m_blur", "Blur Background", "Blurs the game behind the menu", true),
+				Tg("m_shadow", "Window Glow", "Soft glow around the window", true),
+				Tg("m_wm", "Watermark", "Shows FPS / ping watermark", true),
+				Sel("cl_scale", "UI Scale", "Overall menu size", { "90%", "100%", "110%", "125%" }, "100%"),
+				Tg("cl_anim", "Animations", "Spring / squish motion", true),
+			} },
+			{ title = "Import / Export", items = {
+				Bn("ue_import", "Import from clipboard", "UE SaveManager install JSON from clipboard"),
+				Bn("ue_export", "Export to clipboard", "Dump config JSON to clipboard"),
+				Bn("ue_refresh", "Refresh config list", "listfiles SaveManager folder"),
+			} },
+			{ title = "Skin Changer (UE)", items = {
+				Tx("cosmetics_changer_save_data", "Cosmetics JSON", "UE Options.cosmetics_changer_save_data", "", "paste cosmetics json"),
+				Bn("ue_skin_apply", "Apply cosmetics JSON", "UE_SetCosmetics"),
+				Bn("ue_skin_read", "Read cosmetics JSON", "UE_GetCosmetics → box / print"),
+				Tx("skin_changer_search", "Skin search", "UE skin_changer_search", "", "search..."),
 			} },
 			{ title = "Unload", items = {
-				Ul("cl_unload", "Unload Neko", "Removes the menu and disconnects everything", "Unload Neko"),
-			} },
-			{ title = "Loading", items = {
-				Tg("cl_autoload_on", "Auto Load", "Loads your chosen config when Neko starts"),
-				Tg("cl_silent", "Silent Load", "Starts with the menu hidden, so it loads quietly"),
-			} },
-			{ title = "Performance", items = {
-				Sel("p_cap", "FPS Cap", "Frames the renderer is allowed", { "Unlocked", "60", "120", "144", "240" }, "Unlocked"),
-				Rg("p_scale", "Render Scale", "Internal resolution percentage", 50, 150, 100, "%"),
-				Tg("p_low", "Low Texture Mode", "Shrinks texture memory usage"),
+				Ul("cl_unload", "Unload", "Destroys the menu and stops all hooks", "Unload"),
 			} },
 		} },
-	} },
-	{ id = "games", label = "Games", icon = "games", tabs = {
-		{ id = "Universal", groups = { { title = "Universal", items = {
-			Sel("g_game", "Current Game", "Auto-detected from the place", { "Auto", "Arsenal", "Blox Fruits", "Da Hood" }, "Auto"),
-			Tg("g_mod", "Auto Load Module", "Applies game-specific tweaks", true),
-			Rg("g_fov", "Camera FOV", "Wides out your camera", 70, 120, 70, "°"),
-		} } } },
-		{ id = "Modules", groups = { { title = "Modules", items = {
-			Tg("mod_ars", "Arsenal", "Weapon-handling tweaks"),
-			Tg("mod_bf", "Blox Fruits", "Fruit & combat tweaks"),
-			Tg("mod_dh", "Da Hood", "Movement & combat tweaks"),
-		} } } },
 	} },
 }
 
@@ -804,9 +1205,7 @@ themed(innerStroke, function()
 	innerStroke.Color = ACCENT
 end)
 
-local shadowOn = true
 local function setGlow(on)
-	shadowOn = on
 	tween(glow, { BackgroundTransparency = on and 0.94 or 1 }, 0.3)
 	innerStroke.Color = on and ACCENT or C.white
 	innerStroke.Transparency = on and 0.6 or 0.86
@@ -848,7 +1247,7 @@ end
 
 tick(function()
 	local vp = screen.AbsoluteSize
-	local breath = 1 + math.sin(T * 1000 / 850) * 0.005
+	local breath = _G.NEKO_ANIM_OFF and 1 or (1 + math.sin(T * 1000 / 850) * 0.005)
 	-- drag tilt: leans into the motion, more than before (up to 6 degrees), and reacts to vertical speed too
 	local rot = math.clamp(px.v * 0.022 + py.v * 0.004, -6, 6)
 	-- px/py are still the top-left corner; the anchor is the center, so add half the size
@@ -1112,13 +1511,13 @@ end
 -- logo frame update: bob (lbob), float (logoFloat), and the pop springs
 tick(function()
 	local f = 0
-	if T > 1.2 then
+	if T > 1.2 and not _G.NEKO_ANIM_OFF then
 		f = (1 - math.cos(2 * math.pi * (T - 1.2) / 5.5)) / 2
 	end
 	mark.Position = UDim2.fromOffset(30, 3 - 3 * f)
 	mark.Rotation = -1.5 * f
 	logoScale.Scale = math.max(logoIn.x, 0)
-	local bobPhase = (1 - math.cos(2 * math.pi * T / 2.6)) / 2
+	local bobPhase = _G.NEKO_ANIM_OFF and 0 or (1 - math.cos(2 * math.pi * T / 2.6)) / 2
 	for _, st in ipairs(letters) do
 		local sv = math.clamp(st.sc.x, 0, 1)
 		local yo = st.oy.x - bobPhase * 2.5
@@ -1142,6 +1541,15 @@ end)
 
 -- logo intro: plays once each time the window opens, never on hover-leave
 local function playLogoIntro()
+	if _G.NEKO_ANIM_OFF then
+		snap(logoIn, 1)
+		for _, st in ipairs(letters) do
+			snap(st.oy, 0)
+			snap(st.sc, 1)
+			snap(st.rr, 0)
+		end
+		return
+	end
 	snap(logoIn, 0.5)
 	setT(logoIn, 1)
 	for i, st in ipairs(letters) do
@@ -1445,6 +1853,7 @@ local function openPopup(btn, opts, current, onPick, arrow)
 		BackgroundColor3 = C.selMenu,
 		BorderSizePixel = 0,
 		ClipsDescendants = true,
+		Active = true, -- sinks clicks: nothing behind the menu gets them
 		ZIndex = 60,
 	}, screen)
 	corner(f, 11)
@@ -1562,7 +1971,7 @@ local function ctrlToggle(row, item)
 	local KF = { { 0, 1, 1 }, { 0.165, 1.9, 0.55 }, { 0.33, 0.6, 1.4 }, { 0.44, 1.15, 0.9 }, { 0.55, 1, 1 } }
 	local sqT = nil
 	local function knobSquishScale()
-		if not sqT then
+		if not sqT or _G.NEKO_ANIM_OFF then
 			return 1, 1
 		end
 		local t = T - sqT
@@ -1760,7 +2169,7 @@ local function ctrlKey(row, item)
 			return false
 		end
 		if pulsing then
-			bstroke.Transparency = 0.3 + 0.3 * (1 - math.cos(2 * math.pi * T / 1.1)) / 2 -- keybtn.listen pulse
+			bstroke.Transparency = _G.NEKO_ANIM_OFF and 0.3 or (0.3 + 0.3 * (1 - math.cos(2 * math.pi * T / 1.1)) / 2) -- keybtn.listen pulse
 		end
 		return true
 	end)
@@ -1848,12 +2257,19 @@ local function ctrlButton(row, item)
 	end)
 	squishy(b, 1.05, 0.94, 0.9, 0.9)
 	b.Activated:Connect(function()
-		b.Text = "✓ done"
 		popStretch(b)
-		task.delay(0.9, function()
-			if b.Parent then
-				b.Text = item.label
-			end
+		local id = item.id
+		local env = getgenv and getgenv() or _G
+		if id == "ue_import" and type(env.UE_ImportClipboard) == "function" then pcall(env.UE_ImportClipboard)
+		elseif id == "ue_export" and type(env.UE_ExportClipboard) == "function" then pcall(env.UE_ExportClipboard)
+		elseif id == "ue_skin_apply" and type(env.UE_SetCosmetics) == "function" then pcall(env.UE_SetCosmetics, tostring(Flags.cosmetics_changer_save_data or ""))
+		elseif id == "ue_skin_read" and type(env.UE_GetCosmetics) == "function" then
+			local j = env.UE_GetCosmetics()
+			if j then Flags.cosmetics_changer_save_data = j; print("[skin]", j) end
+		end
+		b.Text = "✓"
+		task.delay(0.8, function()
+			if b.Parent then b.Text = item.label or item.title or "OK" end
 		end)
 	end)
 end
@@ -1867,7 +2283,7 @@ local function ctrlUnload(row, item)
 		Size = UDim2.fromOffset(w, 28),
 		BackgroundColor3 = Color3.fromHex("#f472b6"),
 		BorderSizePixel = 0,
-		Text = item.label,
+		Text = item.label or item.title or "Unload",
 		Font = F_BOLD,
 		TextSize = 11.5,
 		TextColor3 = C.white,
@@ -2119,12 +2535,53 @@ local function ctrlConfigPick(row, item)
 	end)
 end
 
+
+-- free text box (UE-style input)
+local function ctrlText(row, item)
+	local box = new("TextBox", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -14, 0.5, 0),
+		Size = UDim2.fromOffset(200, 28),
+		BackgroundColor3 = C.switchOff,
+		BorderSizePixel = 0,
+		Text = tostring(Flags[item.id] or item.def or ""),
+		PlaceholderText = item.placeholder or "Type here...",
+		PlaceholderColor3 = C.mut,
+		TextColor3 = C.txt,
+		TextSize = 12,
+		Font = F_SEMI,
+		ClearTextOnFocus = false,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		ZIndex = 3,
+	}, row)
+	corner(box, 8)
+	new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }, box)
+	stroke(box, C.white, 0.9, 1)
+	box.Focused:Connect(function()
+		tween(box, { BackgroundColor3 = C.rowH }, 0.12)
+	end)
+	box.FocusLost:Connect(function()
+		tween(box, { BackgroundColor3 = C.switchOff }, 0.12)
+		setFlag(item.id, box.Text)
+	end)
+	box:GetPropertyChangedSignal("Text"):Connect(function()
+		-- live write so spam can read while typing
+		Flags[item.id] = box.Text
+	end)
+	onFlag[item.id] = function(v)
+		if box.Parent and not box:IsFocused() then
+			box.Text = tostring(v or "")
+		end
+	end
+end
+
 CONTROLS = {
 	toggle = ctrlToggle,
 	slider = ctrlSlider,
 	select = ctrlSelect,
 	key = ctrlKey,
 	color = ctrlColor,
+	text = ctrlText,
 	button = ctrlButton,
 	unload = ctrlUnload,
 	cfgcreate = ctrlConfigCreate,
@@ -2256,7 +2713,7 @@ local function buildPage(tab)
 				ctrl(row, item)
 			end
 			-- rows bounce in with the stagger from the web build
-			local delay = math.min(70 + (rowIx - 1) * 30, 520) / 1000
+			local delay = _G.NEKO_ANIM_OFF and 0 or (math.min(70 + (rowIx - 1) * 30, 520) / 1000)
 			-- index.html rowIn (.55s): 0% (.92,.96) -> 55% (1.02,.985) -> 75% (.995,1.008) -> 100% (1,1)
 			-- each row fades in while it grows far past its box, then shrinks back to normal size
 			-- its own tick drives the row's Size directly, so the squish system can't cancel it
@@ -2439,6 +2896,7 @@ local function buildTabs(sec, instant)
 		end)
 		b.Activated:Connect(function()
 			if currentTab == tab then
+				closePopup()
 				return
 			end
 			local prevIdx = table.find(sec.tabs, currentTab)
@@ -2454,11 +2912,34 @@ local function buildTabs(sec, instant)
 			end
 			showPage(sec, tab)
 		end)
-		local tsq = squishy(b, 1.04, 0.9, 0.86, 0.8) -- hover: stretched sideways and squashed down; press: bundled up
+		local tInfo = ASSETS.text[tab.id]
+		local tsq, isq
+		if tInfo and tInfo[1] ~= "" then
+			-- image text: the bubble and the image share one anchor and one squish, so the bubble follows the image.
+			-- bottom-anchored, so holding stretches UP
+			b.AnchorPoint = Vector2.new(0.5, 0.5)
+			b.Position = UDim2.fromOffset(x + w / 2, 14)
+			b.TextTransparency = 1
+			local tImg = new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(tInfo[2], tInfo[3]), BackgroundTransparency = 1, Image = tInfo[1], ImageColor3 = C.mut, ZIndex = 4 }, b)
+			b:GetPropertyChangedSignal("TextColor3"):Connect(function()
+				tImg.ImageColor3 = b.TextColor3
+			end)
+			-- hover: sides stretch ~20% wider, height unchanged; press: ~12% narrower (letters closer), ~30% taller, all from the center
+			tsq = squishy(b, 1.125, 1, 0.925, 1.1875, nil, true)
+			isq = squishy(b, 1.125, 1, 0.925, 1.1875, tImg, true)
+		else
+			tsq = squishy(b, 1.04, 0.9, 0.86, 0.8) -- hover: stretched sideways and squashed down; press: bundled up
+		end
 		snap(tsq, 0.85)
+		if isq then
+			snap(isq, 0.85)
+		end
 		task.delay((ti - 1) * 0.045, function()
 			if b.Parent then
 				setT(tsq, 1)
+				if isq then
+					setT(isq, 1)
+				end
 			end
 		end)
 		x = x + w + 4
@@ -2498,6 +2979,7 @@ local dockBtn = new("TextButton", {
 	Text = "",
 	AutoButtonColor = false,
 	ZIndex = 20,
+	Active = false, -- click-through while the menu is closed: the game gets the click
 }, dock)
 corner(dockBtn, 999)
 -- flower icon + "neko" label, same asset as the titlebar
@@ -2521,20 +3003,16 @@ tick(function()
 	local bob = 0
 	if dock.Visible then
 		-- fast float: 6px up and down, one cycle every 0.9s
-		bob = -6 * (1 - math.cos(2 * math.pi * T / 0.9)) / 2
+		bob = _G.NEKO_ANIM_OFF and 0 or (-6 * (1 - math.cos(2 * math.pi * T / 0.9)) / 2)
 	end
 	dock.Position = UDim2.new(0.5, 0, 1, -20 + dockY.x + bob)
 	dockUI.Scale = math.max(dockS.x, 0)
 	return true
 end)
-dockBtn.Activated:Connect(function()
-	popStretch(dockBtn)
-	showWin()
-end)
 squishy(dockBtn, 1.08, 0.9, 0.92, 1.08)
 -- semi squish that pulses in time with the float: wider as it goes up, taller as it comes down
 FX[dockBtn].kf = function()
-	local w = math.sin(2 * math.pi * T / 0.9)
+	local w = _G.NEKO_ANIM_OFF and 0 or math.sin(2 * math.pi * T / 0.9)
 	return 1 + 0.035 * w, 1 - 0.035 * w
 end
 
@@ -2553,10 +3031,10 @@ hideWin = function(mode)
 		setT(offY, 0)
 		setT(bounceY, 26) -- drop, then bounce around before it goes
 	end
-	task.delay(mode == "min" and 0.25 or 0.55, function()
+	task.delay(_G.NEKO_ANIM_OFF and 0 or (mode == "min" and 0.25 or 0.55), function()
 		if hidden then
 			win.Visible = false
-			dock.Visible = true
+			dock.Visible = not isMobile
 			snap(dockY, 34)
 			setT(dockY, 0)
 			snap(dockS, 0.4)
@@ -2605,6 +3083,17 @@ sinkOff = function()
 	end
 end
 
+-- first-person games (lock-center camera) re-lock the mouse every frame, so keep it free while the menu is open
+tick(function()
+	if not hidden then
+		if UIS.MouseBehavior ~= Enum.MouseBehavior.Default then
+			UIS.MouseBehavior = Enum.MouseBehavior.Default
+		end
+		UIS.MouseIconEnabled = true
+	end
+	return true
+end)
+
 end
 
 showWin = function()
@@ -2623,6 +3112,108 @@ showWin = function()
 	snap(bounceY, 30) -- starts 30px low, bounces up and down
 	setT(bounceY, 0)
 	playLogoIntro()
+end
+
+do
+-- =====================================================================
+-- mobile: top toggle button, dock and hint hidden, /mobile forces the mode
+-- =====================================================================
+local mobileBtn = new("TextButton", {
+	Name = "NekoToggle",
+	AnchorPoint = Vector2.new(0.5, 0),
+	Position = UDim2.new(0.5, 0, 0, GuiService:GetGuiInset().Y + 8),
+	Size = UDim2.fromOffset(46, 46),
+	BackgroundColor3 = C.win,
+	BorderSizePixel = 0,
+	Text = "",
+	AutoButtonColor = false,
+	ZIndex = 50,
+	Visible = false,
+}, screen)
+corner(mobileBtn, 12)
+stroke(mobileBtn, ACCENT, 0.4, 1)
+if ASSETS.flower ~= "" then
+	new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(24, 24), BackgroundTransparency = 1, Image = ASSETS.flower, ImageColor3 = ACCENT, ZIndex = 51 }, mobileBtn)
+else
+	label(mobileBtn, "✿", 20, ACCENT, F_BOLD, { Size = UDim2.fromScale(1, 1), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 51 })
+end
+squishy(mobileBtn, 1.08, 0.94, 0.9, 1.08)
+-- drag: works with mouse and touch. A drag that moves the button does not count as a click.
+local dragging, moved, suppress = false, false, false
+local grabPos, grabCenter = nil, nil
+mobileBtn.InputBegan:Connect(function(input)
+	local t = input.UserInputType
+	if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch then
+		dragging = true
+		moved = false
+		suppress = false
+		grabPos = input.Position
+		grabCenter = mobileBtn.AbsolutePosition + mobileBtn.AbsoluteSize / 2
+	end
+end)
+UIS.InputChanged:Connect(function(input)
+	if not dragging then
+		return
+	end
+	local t = input.UserInputType
+	if t ~= Enum.UserInputType.MouseMovement and t ~= Enum.UserInputType.Touch then
+		return
+	end
+	local dx, dy = input.Position.X - grabPos.X, input.Position.Y - grabPos.Y
+	if not moved and math.sqrt(dx * dx + dy * dy) < 6 then
+		return -- small wobble: still a click
+	end
+	moved = true
+	suppress = true
+	local vp = screen.AbsoluteSize
+	local half = mobileBtn.AbsoluteSize.X / 2
+	local cx = math.clamp(grabCenter.X + dx, half, vp.X - half)
+	local cy = math.clamp(grabCenter.Y + dy, half, vp.Y - half)
+	mobileBtn.Position = UDim2.fromOffset(cx, cy) -- anchor is centre, set by squishy
+end)
+UIS.InputEnded:Connect(function(input)
+	local t = input.UserInputType
+	if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch then
+		dragging = false
+	end
+end)
+
+mobileBtn.Activated:Connect(function()
+	if suppress then
+		suppress = false
+		return
+	end
+	popStretch(mobileBtn)
+	if hidden then
+		showWin()
+	else
+		hideWin("min")
+	end
+end)
+
+local function applyMode()
+	mobileBtn.Visible = isMobile
+	hint.Visible = not isMobile
+	if isMobile then
+		dock.Visible = false
+	end
+end
+
+-- "/mobile" in chat forces the mobile layout for this session
+local function onChat(msg)
+	if type(msg) == "string" and string.lower(msg):match("^%s*/mobile%s*$") then
+		isMobile = true
+		applyMode()
+	end
+end
+player.Chatted:Connect(onChat)
+pcall(function()
+	game:GetService("TextChatService").SendingMessage:Connect(function(m)
+		onChat(m.Text)
+	end)
+end)
+
+applyMode()
 end
 
 -- =====================================================================
@@ -2653,14 +3244,27 @@ local function setAccent(name)
 	end
 end
 
-onFlag.m_accent = setAccent
-onFlag.m_blur = function(on)
+onFlag.__pin.m_accent = setAccent
+onFlag.__pin.m_blur = function(on)
 	blur.Enabled = on
 end
-onFlag.m_shadow = function(on)
+_G.NEKO_ANIM_OFF = (Flags.cl_anim == false)
+onFlag.__pin.cl_anim = function(on)
+	_G.NEKO_ANIM_OFF = (on == false)
+	if _G.NEKO_ANIM_OFF then
+		for _, sp in ipairs(springs) do
+			sp.x = sp.t
+			sp.v = 0
+		end
+	end
+end
+onFlag.__pin.m_shadow = function(on)
 	setGlow(on)
 end
-onFlag.m_wm = function(on)
+onFlag.__pin.cl_unload = function()
+	if _G.NEKO_STOP then pcall(_G.NEKO_STOP) end
+end
+onFlag.__pin.m_wm = function(on)
 	if on then
 		wm.Visible = true
 		wm.GroupTransparency = 1
@@ -2675,7 +3279,7 @@ onFlag.m_wm = function(on)
 		end)
 	end
 end
-onFlag.cl_scale = function(v)
+onFlag.__pin.cl_scale = function(v)
 	local map = { ["90%"] = 0.9, ["100%"] = 1, ["110%"] = 1.1, ["125%"] = 1.25 }
 	uiScaleSetting = map[v] or 1
 end
@@ -2700,6 +3304,11 @@ end)
 
 -- window drag release + popup close on outside click
 UIS.InputBegan:Connect(function(input, gp)
+	-- the dock is click-through, so its click is detected here: a click on it opens the menu
+	if input.UserInputType == Enum.UserInputType.MouseButton1 and hidden and dock.Visible and inside(dock, guiMouse()) then
+		popStretch(dockBtn)
+		showWin()
+	end
 	if input.UserInputType == Enum.UserInputType.Keyboard then
 		if listening then
 			local f = listening
@@ -2726,7 +3335,14 @@ UIS.InputBegan:Connect(function(input, gp)
 	end
 	if input.UserInputType == Enum.UserInputType.MouseButton1 and popup then
 		local m = guiMouse()
-		if not inside(popup.frame, m) and not inside(popup.btn, m) then
+		local onPopup = false
+		for _, o in ipairs(screen:GetGuiObjectsAtPosition(m.X, m.Y)) do
+			if o == popup.btn or o == popup.frame or o:IsDescendantOf(popup.frame) then
+				onPopup = true
+				break
+			end
+		end
+		if not onPopup then
 			closePopup()
 		end
 	end
@@ -2782,10 +3398,15 @@ selectSection(DATA[1], true)
 centerWindow()
 snap(px, px.t)
 snap(py, py.t)
+-- auto load: apply the saved config through the same path as the Load button, so every effect runs
+-- (theme, blur, glow, watermark, animations, UI scale), not just the stored values
+if settings.cl_autoload_on == true and settings.autoload and configs[settings.autoload] then
+	applyConfig(settings.autoload)
+end
 if Flags.cl_silent and Flags.cl_autoload_on and settings.autoload and configs[settings.autoload] then
 	-- silent load: the config is applied, the menu stays hidden, the dock button shows
 	win.Visible = false
-	dock.Visible = true
+	dock.Visible = not isMobile
 	snap(dockY, 0)
 	snap(dockS, 1)
 else
